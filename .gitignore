@@ -1,0 +1,11 @@
+node_modules/
+dist/
+test-results/
+playwright-report/
+*.log
+.env
+.env.*
+coverage/
+.cache/
+blob-report/
+playwright/.cache/
