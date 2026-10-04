@@ -200,3 +200,71 @@ test('known long-wrong case drives diagnostics, TIME LEAK and the review queue',
   await page.goto('/review');
   await expect(page.locator('.review-list')).toContainText('우선도 12');
 });
+
+for (const [name, width, height, touch] of [
+  ['desktop', 1440, 1000, false],
+  ['ipad-landscape', 1180, 820, true],
+  ['ipad-portrait', 820, 1180, true],
+] as const) {
+  test.describe(`Training feedback on ${name}`, () => {
+    test.use({ viewport: { width, height }, hasTouch: touch });
+    test('keeps one reachable next action before explanation without auto-advancing', async ({ page }) => {
+      await importBank(page);
+      await page.clock.install();
+      await begin(page);
+      await page.clock.fastForward(4000);
+      await page.keyboard.press('1');
+      await page.keyboard.press('Enter');
+      const next = page.getByRole('button', { name: '다음 문제', exact: true });
+      await expect(next).toBeDisabled();
+      const confidence = page.getByRole('button', { name: '확신도 4', exact: true });
+      if (touch) await confidence.tap(); else await confidence.click();
+      await expect(confidence).toHaveAttribute('aria-pressed', 'true');
+      await expect(next).toBeEnabled();
+      await expect(page.getByRole('heading', { name: bank[0].question, exact: true })).toBeVisible();
+      await expect(next).toHaveCount(1);
+      await page.screenshot({ path: `test-results/${name}-training-feedback.png`, fullPage: true });
+      const panel = (await page.locator('.reflection').boundingBox())!;
+      const action = (await next.boundingBox())!;
+      const choices = (await page.locator('.confidence-row').boundingBox())!;
+      const explanation = (await page.locator('.explanation').boundingBox())!;
+      expect(action.y).toBeGreaterThanOrEqual(choices.y + choices.height);
+      expect(action.y + action.height).toBeLessThanOrEqual(panel.y + panel.height);
+      expect(action.y + action.height).toBeLessThanOrEqual(explanation.y);
+      expect(action.height).toBeGreaterThanOrEqual(48);
+      if (touch) {
+        expect(action.width).toBeGreaterThanOrEqual(panel.width - 46);
+        await expect(next).toBeInViewport({ ratio: 1 });
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await expect(page.locator('.explanation')).toContainText(bank[0].explanation);
+      await page.clock.fastForward(30000);
+      if (touch) await next.tap(); else await page.keyboard.press('Space');
+      await expect(page.getByRole('heading', { name: bank[1].question, exact: true })).toBeVisible();
+      await page.keyboard.press('2');
+      await page.keyboard.press('Enter');
+      const finish = page.getByRole('button', { name: '결과 보기', exact: true });
+      await expect(finish).toBeVisible();
+      await expect(page.getByRole('button', { name: '확신도 3', exact: true })).toBeEnabled();
+      await page.keyboard.press('3');
+      await expect(page.getByRole('button', { name: '확신도 3', exact: true })).toHaveAttribute('aria-pressed', 'true');
+      await expect(finish).toBeDisabled();
+      await page.keyboard.press('Space');
+      await expect(page.getByText('오답입니다', { exact: true })).toBeVisible();
+      await page.keyboard.press('k');
+      await expect(finish).toBeEnabled();
+      await expect(page.locator('.reflection').getByRole('button', { name: '결과 보기', exact: true })).toHaveCount(1);
+      if (touch) await finish.tap(); else await page.keyboard.press('Space');
+      await expect(page.getByRole('heading', { name: '훈련 결과', exact: true })).toBeVisible();
+      await page.goto('/');
+      const downloadEvent = page.waitForEvent('download');
+      await page.getByRole('button', { name: 'Export Study Data' }).click();
+      const exported = JSON.parse(await readFile((await (await downloadEvent).path())!, 'utf8'));
+      expect(exported.sessions[0].status).toBe('COMPLETED');
+      expect(exported.responses[0]).toMatchObject({ correct: true, confidence: 4, failureType: null });
+      expect(exported.responses[0].responseTimeMs).toBeGreaterThanOrEqual(4000);
+      expect(exported.responses[0].responseTimeMs).toBeLessThan(15000);
+      expect(exported.responses[1]).toMatchObject({ correct: false, confidence: 3, failureType: 'K' });
+    });
+  });
+}
