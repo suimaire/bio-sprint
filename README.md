@@ -1,6 +1,6 @@
 # BIO SPRINT v0.2
 
-2026-11-14 생물학 시험을 위한 개인용 시간제한 훈련 도구. Korean UI, Vite + React + TypeScript, native IndexedDB. No backend or account.
+2026 생물학 시험을 위한 개인용 시간제한 훈련 도구. Korean UI, Vite + React + TypeScript, native IndexedDB. No backend or account.
 
 ## GitHub Pages
 
