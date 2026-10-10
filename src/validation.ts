@@ -1,3 +1,5 @@
+import { validateQFData } from './qfValidation';
+import { mergeQFPackages } from './qfImport';
 import { CONTEXT_NOVELTIES, FAILURES, LANGUAGES, MODES, SOURCES, STIMULUS_TYPES, TAXONOMY, type Question, type Session, type StudyData } from './model';
 
 export class ValidationError extends Error {
@@ -105,7 +107,7 @@ export function validateStudyData(value: unknown): StudyData {
     check(!pairs.has(pair), p, '동일 세션/문제 응답이 중복됩니다.'); pairs.add(pair);
     check(oneOf(r.outcome, ['PENDING', 'ANSWERED', 'SKIPPED', 'UNREACHED']), `${p}.outcome`, '지원하지 않는 결과입니다.');
     check(r.confidence === null || integer(r.confidence, 1, 5), `${p}.confidence`, 'null 또는 1–5 정수가 필요합니다.');
-    check(r.failureType === null || oneOf(r.failureType, Object.keys(FAILURES)), `${p}.failureType`, 'null 또는 K/R/T/C/S가 필요합니다.');
+    check(r.failureType === null || oneOf(r.failureType, Object.keys(FAILURES)), `${p}.failureType`, 'null 또는 K/R/T/C/S/L이 필요합니다.');
     check(integer(r.responseTimeMs), `${p}.responseTimeMs`, '0 이상의 정수 밀리초가 필요합니다.');
     check(integer(r.visitCount, 0, s?.mode === 'REAL_EXAM' ? Number.MAX_SAFE_INTEGER : 2), `${p}.visitCount`, '유효한 방문 횟수가 필요합니다.');
     check(typeof r.revisited === 'boolean' && r.revisited === ((r.visitCount as number) > 1), `${p}.revisited`, '방문 횟수와 일치하는 boolean이 필요합니다.');
@@ -161,6 +163,7 @@ export function validateStudyData(value: unknown): StudyData {
     check(rows.reduce((sum, r) => sum + r.responseTimeMs, 0) <= s.timeLimitSec * 1000, `sessions[${s.id}].responseTimeMs`, '문제 시간 합계가 세션 제한 시간을 초과합니다.');
   }
   if (errors.length) throw new ValidationError(errors);
+  validateQFData(value);
   return value as unknown as StudyData;
 }
 
@@ -206,9 +209,34 @@ export function mergeStudyData(current: StudyData, incoming: StudyData) {
     return [...map.values()];
   };
   const data: StudyData = { schemaVersion: 1, questions: merge(current.questions, incoming.questions, 'questions'), sessions: merge(current.sessions, incoming.sessions, 'sessions'), responses: merge(current.responses, incoming.responses, 'responses') };
+  if (current.qfPackages || incoming.qfPackages) data.qfPackages = mergeQFPackages(current.qfPackages, incoming.qfPackages);
+  if (current.qfSessions || incoming.qfSessions) data.qfSessions = merge(current.qfSessions ?? [], incoming.qfSessions ?? [], 'qfSessions');
+  if (current.qfResponses || incoming.qfResponses) data.qfResponses = merge(current.qfResponses ?? [], incoming.qfResponses ?? [], 'qfResponses');
   validateStudyData(data);
   return { data, summary: { questions: data.questions.length - current.questions.length, sessions: data.sessions.length - current.sessions.length, responses: data.responses.length - current.responses.length } };
 }
 export function parseJSON(text: string): unknown {
-  try { return JSON.parse(text); } catch { throw new ValidationError(['JSON 문법 오류: 따옴표, 쉼표, 괄호를 확인해 주세요. 파일은 UTF-8 JSON이어야 합니다.']); }
+  let value: unknown;
+  try {
+    value = JSON.parse(text, (_, v: unknown) => {
+      if (typeof v === 'number' && !Number.isFinite(v)) throw new Error('Nonfinite JSON number');
+      return v;
+    });
+  } catch { throw new ValidationError(['JSON 문법 또는 숫자 오류: UTF-8 JSON과 유한한 숫자가 필요합니다.']); }
+  // Syntax is already checked above. Scan object keys before accepting the
+  // parsed value: JSON.parse otherwise silently discards duplicate properties.
+  const stack: ({ keys: Set<string>; key: boolean } | null)[] = [];
+  for (const match of text.matchAll(/"(?:\\.|[^"\\])*"|[{}\[\]:,]/g)) {
+    const token = match[0], current = stack.at(-1);
+    if (token === '{') stack.push({ keys: new Set(), key: true });
+    else if (token === '[') stack.push(null);
+    else if (token === '}' || token === ']') stack.pop();
+    else if (token === ',' && current) current.key = true;
+    else if (token.startsWith('"') && current?.key) {
+      const key = JSON.parse(token) as string;
+      if (current.keys.has(key)) throw new ValidationError(['중복 JSON 키가 있습니다. 전체 가져오기를 거절했습니다.']);
+      current.keys.add(key); current.key = false;
+    }
+  }
+  return value;
 }

@@ -9,3 +9,8 @@ coverage/
 .cache/
 blob-report/
 playwright/.cache/
+
+# Local QF exports, source material and private verification artifacts
+verification.local/
+*.biosprint-v1.json
+*.pdf

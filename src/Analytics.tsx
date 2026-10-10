@@ -1,3 +1,4 @@
+import { QFSummary } from './QFSummary';
 import { useState } from 'react';
 import { aggregate, diagnosticFlags, FLAG_LABELS, groupStats, timeLeaks } from './metrics';
 import { FAILURES, TAXONOMY, type BiologyDomain, type FailureType, type Response, type StudyData } from './model';
@@ -34,6 +35,8 @@ export function Analytics({ data, sessionId }: { data: StudyData; sessionId?: st
   const a = aggregate(data, rows);
   return <>
     <header className="page-heading"><div><span className="eyebrow">SESSION DEBRIEF</span><h1>{sessionId ? '훈련 결과' : '누적 분석'}</h1><p>{session ? `${session.mode} · ${session.questionIds.length}문항 · ${new Date(session.startedAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}` : '정답 여부와 시간을 함께 읽어 다음 훈련을 정하세요.'}</p></div><Link className="button primary" href="/training">다시 훈련하기 →</Link></header>
+    {!sessionId && <QFSummary data={data} detailed/>}
+    {!sessionId && !!data.qfPackages?.length && <h2>기존 BIO SPRINT 훈련 분석</h2>}
     <Stats data={data} responses={rows}/>
     <div className="diagnostic-strip"><span>장시간 오답 <strong>{a.longWrong}</strong></span><span>시간 투자 주의 <strong>{a.badInvestments}</strong></span><span>명시적 건너뜀 / 풀이 중 종료 <strong>{rows.filter(r => r.outcome === 'SKIPPED').length}</strong></span><span>미도달 <strong>{rows.filter(r => r.outcome === 'UNREACHED').length}</strong></span></div>
     <div className="two-column"><section className="panel"><div className="section-heading"><h2>영역별 진단</h2><label className="sr-only" htmlFor="analytics-group">분석 분류</label><select id="analytics-group" value={by} onChange={e => setBy(e.target.value as typeof by)}><option value="domain">영역</option><option value="subdomain">세부 영역</option><option value="mode">모드</option><option value="failureType">오답 원인</option></select></div>

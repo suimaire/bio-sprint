@@ -1,3 +1,4 @@
+import type { QFPackage, QFSession, QFResponse } from './qfModel';
 export const TAXONOMY = {
   Biochemistry: '생화학', 'Cell Biology': '세포생물학', 'Molecular Biology': '분자생물학',
   Genetics: '유전학', Physiology: '생리학', Immunology: '면역학', Evolution: '진화',
@@ -12,7 +13,7 @@ export const LANGUAGES = ['KO', 'EN'] as const;
 export const STIMULUS_TYPES = ['DIRECT', 'PASSAGE', 'GRAPH', 'TABLE', 'EXPERIMENT', 'PEDIGREE', 'CALCULATION'] as const;
 export const CONTEXT_NOVELTIES = ['STANDARD', 'TRANSFER'] as const;
 export const SOURCES = ['VERIFIED', 'REVIEWED', 'DRAFT'] as const;
-export const FAILURES = { K: '개념/지식 부족', R: '추론/자료해석', T: '시간 부족', C: '단순 실수', S: '문제 선택 실패' } as const;
+export const FAILURES = { K: '개념/지식 부족', R: '추론/자료해석', T: '시간 부족', C: '단순 실수', S: '문제 선택 실패', L: '영어 독해 오류' } as const;
 export type FailureType = keyof typeof FAILURES;
 export type TriageDecision = 'SOLVE' | 'LATER' | 'SKIP';
 export interface Question {
@@ -41,6 +42,6 @@ export interface Response {
   visitCount: number; revisited: boolean;
   firstAnsweredAt?: number | null; finalResponseAt?: number | null; answerChangeCount?: number;
 }
-export interface StudyData { schemaVersion: 1; questions: Question[]; sessions: Session[]; responses: Response[] }
+export interface StudyData { schemaVersion: 1; questions: Question[]; sessions: Session[]; responses: Response[]; qfPackages?: QFPackage[]; qfSessions?: QFSession[]; qfResponses?: QFResponse[] }
 export const EXAM_DATE = '2026-11-14';
 export const emptyData = (): StudyData => ({ schemaVersion: 1, questions: [], sessions: [], responses: [] });

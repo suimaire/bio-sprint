@@ -1,3 +1,5 @@
+import { QFPlayer, QFSetup } from './QFTraining';
+import { QFReport } from './QFReport';
 import { useEffect, useRef, useState } from 'react';
 import { Dashboard, ReviewList } from './Dashboard';
 import { Analytics } from './Analytics';
@@ -16,6 +18,8 @@ export default function App() {
   const [fatal, setFatal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [qfRecovery, setQFRecovery] = useState<StudyData[]>([]);
+  const qfRecoveryRef = useRef<(() => StudyData | null) | null>(null);
   const saving = useRef(false);
   const current = useRef<Snapshot | null>(null);
   const changes = useRef<BroadcastChannel | null>(null);
@@ -30,8 +34,14 @@ export default function App() {
         const value = await loadData();
         if (cancelled) return;
         if (value.revision > (current.current?.revision ?? -1)) {
+          const priorQF = current.current?.data.qfSessions?.find(s => s.status === 'ACTIVE');
           const priorExam = current.current?.data.sessions.find(s => s.mode === 'REAL_EXAM' && s.status === 'ACTIVE');
+          // Capture the local buffer BEFORE external completion unmounts its
+          // player. A failed write must remain recoverable after tab sync.
+          const pendingQF = qfRecoveryRef.current?.();
+          if (pendingQF && priorQF && !value.data.qfSessions?.some(s => s.id === priorQF.id && s.status === 'ACTIVE')) setQFRecovery(previous => [...previous, pendingQF]);
           current.current = value; setSnapshot(value);
+          if (priorQF && value.data.qfSessions?.some(s => s.id === priorQF.id && s.status === 'COMPLETED')) go('/qf-session/' + encodeURIComponent(priorQF.id));
           if (priorExam && value.data.sessions.some(s => s.id === priorExam.id && s.status === 'COMPLETED')) go(`/session/${encodeURIComponent(priorExam.id)}`);
         }
         setSyncing(false);
@@ -47,6 +57,12 @@ export default function App() {
     document.addEventListener('visibilitychange', onVisible);
     return () => { cancelled = true; changes.current?.close(); changes.current = null; window.removeEventListener('popstate', onRoute); window.removeEventListener('hashchange', onRoute); window.removeEventListener('focus', onFocus); document.removeEventListener('visibilitychange', onVisible); };
   }, []);
+  useEffect(() => {
+    if (!qfRecovery.length) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [qfRecovery]);
   async function save(data: StudyData, expectedData = snapshot?.data) {
     if (!current.current || saving.current) return false;
     if (expectedData !== current.current.data) {
@@ -60,18 +76,24 @@ export default function App() {
     } catch (e) { setError((e as Error).message); return false; }
     finally { saving.current = false; setBusy(false); }
   }
-  const nav = [ ['/', '대시보드', 'grid'], ['/training', '집중 훈련', 'timer'], ['/review', '우선순위 복습', 'review'], ['/question-bank', '문제 은행', 'bank'], ['/analytics', '누적 분석', 'grid'] ] as const;
+  const nav = [ ['/', '대시보드', 'grid'], ['/training', '집중 훈련', 'timer'], ['/question-factory', 'DAILY-15 · QF', 'bank'], ['/review', '우선순위 복습', 'review'], ['/question-bank', '문제 은행', 'bank'], ['/analytics', '누적 분석', 'grid'] ] as const;
   const data = snapshot?.data;
   const activeExam = data?.sessions.find(s => s.mode === 'REAL_EXAM' && s.status === 'ACTIVE');
+  const activeQF = data?.qfSessions?.find(s => s.status === 'ACTIVE');
+  const focused = activeExam || activeQF;
   const pathname = path.split('?')[0];
   let routeSessionId = pathname.slice('/session/'.length);
   try { routeSessionId = decodeURIComponent(routeSessionId); } catch { /* An invalid URL simply has no matching session. */ }
   const reportSession = data?.sessions.find(s => s.id === routeSessionId && s.mode === 'REAL_EXAM');
-  return <><a className="skip-link" href="#main" onClick={e => { e.preventDefault(); document.getElementById("main")?.focus(); document.getElementById("main")?.scrollIntoView(); }}>본문으로 건너뛰기</a>{!activeExam && <aside className="sidebar"><Link href="/" className="brand"><span className="brand-icon"><Icon name="leaf"/></span><span>BIO SPRINT<small>생물학 실전 트레이닝</small></span></Link><span className="sidebar-label">WORKSPACE</span><nav aria-label="주 메뉴">{nav.map(([href, label, icon]) => <Link key={href} href={href} className={`nav-link ${pathname === href ? 'active' : ''}`}><Icon name={icon}/><span>{label}</span>{href === '/training' && data?.sessions.some(s => s.status === 'ACTIVE') && <span className="active-dot" aria-label="진행 중"/>}</Link>)}</nav><div className="sidebar-bottom"><span className="local-label"><span/>LOCAL ONLY</span><p>빠르게 회상하고,<br/>정확하게 판단하세요.</p><small>v0.2 · 2026.11.14 시험</small></div></aside>}
-    <div className={`workspace ${activeExam ? 'exam-workspace' : ''}`}><div className="topbar"><span>나의 학습 공간 <span className="slash">/</span> {activeExam ? 'REAL EXAM' : nav.find(n => n[0] === pathname)?.[1] ?? '훈련 결과'}</span><span className="save-indicator">{busy ? '저장 중…' : error ? '저장 상태 확인 필요' : syncing ? '최신 기록 확인 중…' : snapshot ? '● 이 기기에 저장됨' : '저장소 확인 중'}</span></div><main id="main" tabIndex={-1}>
-      {error && <div className="storage-error"><pre role="alert" className="alert">{error}</pre><div className="button-row">{!activeExam && <button className="button secondary" onClick={() => location.reload()}>새로고침</button>}{fatal && <button className="button secondary" onClick={() => void readRawData().then(raw => downloadJSON(raw, 'bio-sprint-recovery.json')).catch(e => setError((e as Error).message))}>원본 데이터 내보내기</button>}</div>{fatal && <p className="small">기존 데이터는 초기화하지 않았습니다. 원본을 백업한 후 저장소 문제를 확인하세요.</p>}</div>}
+  let qfSessionId = pathname.slice('/qf-session/'.length);
+  try { qfSessionId = decodeURIComponent(qfSessionId); } catch { /* Invalid route. */ }
+  const qfReport = data?.qfSessions?.find(s => s.id === qfSessionId);
+  return <><a className="skip-link" href="#main" onClick={e => { e.preventDefault(); document.getElementById("main")?.focus(); document.getElementById("main")?.scrollIntoView(); }}>본문으로 건너뛰기</a>{!focused && <aside className="sidebar"><Link href="/" className="brand"><span className="brand-icon"><Icon name="leaf"/></span><span>BIO SPRINT<small>생물학 실전 트레이닝</small></span></Link><span className="sidebar-label">WORKSPACE</span><nav aria-label="주 메뉴">{nav.map(([href, label, icon]) => <Link key={href} href={href} className={`nav-link ${pathname === href ? 'active' : ''}`}><Icon name={icon}/><span>{label}</span>{href === '/training' && data?.sessions.some(s => s.status === 'ACTIVE') && <span className="active-dot" aria-label="진행 중"/>}</Link>)}</nav><div className="sidebar-bottom"><span className="local-label"><span/>LOCAL ONLY</span><p>빠르게 회상하고,<br/>정확하게 판단하세요.</p><small>v0.2 · 2026.11.14 시험</small></div></aside>}
+    <div className={`workspace ${focused ? 'exam-workspace' : ''}`}><div className="topbar"><span>나의 학습 공간 <span className="slash">/</span> {activeQF ? 'DAILY-15' : activeExam ? 'REAL EXAM' : nav.find(n => n[0] === pathname)?.[1] ?? '훈련 결과'}</span><span className="save-indicator">{busy ? '저장 중…' : error ? '저장 상태 확인 필요' : syncing ? '최신 기록 확인 중…' : snapshot ? '● 이 기기에 저장됨' : '저장소 확인 중'}</span></div><main id="main" tabIndex={-1}>
+      {error && <div className="storage-error"><pre role="alert" className="alert">{error}</pre><div className="button-row">{!focused && <button className="button secondary" onClick={() => location.reload()}>새로고침</button>}{fatal && <button className="button secondary" onClick={() => void readRawData().then(raw => downloadJSON(raw, 'bio-sprint-recovery.json')).catch(e => setError((e as Error).message))}>원본 데이터 내보내기</button>}</div>{fatal && <p className="small">기존 데이터는 초기화하지 않았습니다. 원본을 백업한 후 저장소 문제를 확인하세요.</p>}</div>}
       {!data && !fatal && <p className="empty">학습 기록을 불러오는 중입니다…</p>}
-      {data && (activeExam ? <ExamPlayer key={activeExam.id} data={data} session={activeExam} onSave={save} busy={busy || syncing}/> : syncing ? <p className="empty">최신 기록을 확인하는 중입니다…</p> : pathname === '/' ? <Dashboard data={data} onSave={save} busy={busy}/> : pathname === '/training' ? <Training key={path} data={data} onSave={save} busy={busy}/> : pathname === '/question-bank' ? <QuestionBank data={data} onSave={save} busy={busy}/> : pathname === '/review' ? <><header className="page-heading"><div><span className="eyebrow">REVIEW QUEUE</span><h1>우선순위 복습</h1><p>최근 실수와 풀이 시간을 다음 훈련으로 연결합니다.</p></div></header><ReviewList data={data} full/></> : pathname === '/analytics' ? <Analytics data={data}/> : pathname.startsWith('/session/') ? <>{reportSession ? <ExamReport data={data} session={reportSession} onSave={save} busy={busy}/> : <Analytics data={data} sessionId={routeSessionId}/>}</> : <><h1>페이지를 찾을 수 없습니다</h1><Link href="/">대시보드로 이동</Link></>)}
+      {qfRecovery.map((recovery, i) => <section className="alert" role="alert" key={i}><strong>복구용 임시 기록 {i + 1}</strong><p>다른 탭에서 훈련이 종료되었습니다. 이 탭의 저장되지 않은 답안은 임시 보관 중입니다. 새로고침하거나 창을 닫기 전에 내보내세요. 저장된 최종 기록은 덮어쓰지 않았습니다.</p><button className="button secondary" onClick={() => downloadJSON(recovery, 'bio-sprint-qf-recovery-' + (i + 1) + '.json')}>임시 기록 내보내기</button></section>)}
+      {data && (activeQF ? <QFPlayer key={activeQF.id} data={data} session={activeQF} onSave={save} busy={busy || syncing} recoveryRef={qfRecoveryRef}/> : activeExam ? <ExamPlayer key={activeExam.id} data={data} session={activeExam} onSave={save} busy={busy || syncing}/> : syncing ? <p className="empty">최신 기록을 확인하는 중입니다…</p> : pathname === '/' ? <Dashboard data={data} onSave={save} busy={busy}/> : pathname === '/question-factory' ? <QFSetup data={data} onSave={save} busy={busy}/> : pathname.startsWith('/qf-session/') ? (qfReport ? <QFReport key={qfReport.id} data={data} session={qfReport} onSave={save} busy={busy}/> : <p>QF 풀이 기록을 찾을 수 없습니다.</p>) : pathname === '/training' ? <Training key={path} data={data} onSave={save} busy={busy}/> : pathname === '/question-bank' ? <QuestionBank data={data} onSave={save} busy={busy}/> : pathname === '/review' ? <><header className="page-heading"><div><span className="eyebrow">REVIEW QUEUE</span><h1>우선순위 복습</h1><p>최근 실수와 풀이 시간을 다음 훈련으로 연결합니다.</p></div></header><ReviewList data={data} full/></> : pathname === '/analytics' ? <Analytics data={data}/> : pathname.startsWith('/session/') ? <>{reportSession ? <ExamReport data={data} session={reportSession} onSave={save} busy={busy}/> : <Analytics data={data} sessionId={routeSessionId}/>}</> : <><h1>페이지를 찾을 수 없습니다</h1><Link href="/">대시보드로 이동</Link></>)}
       <footer className="page-footer"><span>BIO SPRINT</span><span>더 많은 정답, 더 나은 시간 판단.</span><span>PERSONAL STUDY TOOL · v0.2</span></footer>
     </main></div></>;
 }

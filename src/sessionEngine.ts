@@ -5,7 +5,7 @@ export function eligibleQuestions(questions: Question[], mode: SessionMode, incl
   return questions.filter(q => (mode === 'MIXED' || mode === 'REAL_EXAM' || q.mode === mode) && (includeDrafts || q.sourceType !== 'DRAFT') && (!domain || q.domain === domain));
 }
 export function createSession(data: StudyData, config: TrainingConfig, now: number, id: string): StudyData {
-  if (data.sessions.some(s => s.status === 'ACTIVE')) throw new Error('진행 중인 훈련을 먼저 완료해 주세요.');
+  if (data.sessions.some(s => s.status === 'ACTIVE') || data.qfSessions?.some(s => s.status === 'ACTIVE')) throw new Error('진행 중인 훈련을 먼저 완료해 주세요.');
   if (!Number.isInteger(config.count) || config.count < 1 || config.count > 100 || !Number.isFinite(config.timeLimitSec) || config.timeLimitSec < 1) throw new Error('문항 수와 제한 시간을 확인해 주세요.');
   let bank = eligibleQuestions(data.questions, config.mode, config.includeDrafts, config.domain);
   if (config.questionIds) bank = config.questionIds.map(id => bank.find(q => q.id === id)).filter((q): q is Question => !!q);
@@ -157,7 +157,7 @@ export function reflectExam(data: StudyData, sessionId: string, questionId: stri
   const s = data.sessions.find(s => s.id === sessionId);
   if (s?.mode !== 'REAL_EXAM' || s.status !== 'COMPLETED') throw new Error('시험 종료 후에만 진단할 수 있습니다.');
   if (confidence !== null && (!Number.isInteger(confidence) || confidence < 1 || confidence > 5)) throw new Error('확신도는 1–5입니다.');
-  if (failureType !== null && !['K', 'R', 'T', 'C', 'S'].includes(failureType)) throw new Error('유효하지 않은 실패 유형입니다.');
+  if (failureType !== null && !['K', 'R', 'T', 'C', 'S', 'L'].includes(failureType)) throw new Error('유효하지 않은 실패 유형입니다.');
   const next = structuredClone(data);
   const r = next.responses.find(r => r.sessionId === sessionId && r.questionId === questionId);
   if (!r) throw new Error('응답을 찾을 수 없습니다.');
