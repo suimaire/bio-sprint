@@ -1,10 +1,12 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { type StudyData } from './model';
-import { hasQFAnswer, isChoice, type QFQuestion, type QFSession } from './qfModel';
+import { hasQFAnswer, isChoice, type QFSession } from './qfModel';
 import { actQF, startQF, type QFAction } from './qfEngine';
 import { clockText, go, Link, type Save } from './ui';
 import { DataTransfer } from './DataTransfer';
 import { downloadJSON } from './storage';
+import { QFInk } from './ink/QFInk';
+export { QFPrompt } from './QFPrompt';
 
 export function QFSetup({ data, onSave, busy }: { data: StudyData; onSave: Save; busy: boolean }) {
   const [error, setError] = useState('');
@@ -27,13 +29,6 @@ export function QFSetup({ data, onSave, busy }: { data: StudyData; onSave: Save;
     </section>)}
     {!data.qfPackages?.length && <p className="empty">Mac mini에서 불러오거나 QF JSON을 가져오면 저장된 세트가 여기에 표시됩니다.</p>}
     {error && <p className="alert" role="alert">{error}</p>}
-  </>;
-}
-export function QFPrompt({ q }: { q: QFQuestion }) {
-  return <><p className="small muted">Stage {q.stage} · {q.level} · {q.macro_domain} · {q.topic}<br/>지식 깊이 {q.knowledge_depth} · 추론 부담 {q.reasoning_load} · 언어 부담 {q.language_load}</p>
-    <div className="tags"><span className="badge">{q.format}</span><span className="badge qf-review-badge">AI_REVIEWED</span>{q.hypothetical_context && <span className="badge">학습용 가정</span>}{q.synthetic_data && <span className="badge">합성 자료</span>}</div>
-    <h2 id="qf-question-heading" tabIndex={-1} className="question-text">{q.stem}</h2>
-    {q.format === 'COMBINATION' && <dl className="qf-statements">{Object.entries(q.statements!).map(([key, statement]) => <div key={key}><dt>{key}</dt><dd>{statement}</dd></div>)}</dl>}
   </>;
 }
 export function QFPlayer({ data, session, onSave, busy, recoveryRef }: { data: StudyData; session: QFSession; onSave: Save; busy: boolean; recoveryRef: { current: (() => StudyData | null) | null } }) {
@@ -142,7 +137,7 @@ export function QFPlayer({ data, session, onSave, busy, recoveryRef }: { data: S
       <div className="qf-movement button-row"><button className="button secondary" disabled={locked || s.cursor === 0} onClick={() => navigate(s.cursor - 1)}>이전 문항</button><button className="button primary" disabled={locked || s.cursor === 14} onClick={() => navigate(s.cursor + 1)}>다음 문항</button><button className="button secondary" disabled={locked} onClick={() => dispatch({ type: 'triage', value: 'LATER' })}>Later · 나중에</button><button className="button secondary" disabled={locked} onClick={() => dispatch({ type: 'triage', value: 'SKIP' })}>Skip · 건너뛰기</button></div>
     </header>
     <div className="exam-layout"><section className="question-stage exam-question" aria-label="QF 풀이 문항">
-      <QFPrompt q={q}/>
+      <QFInk key={qid} q={q} scope={{ sessionId: s.id, runId: s.runId, questionId: qid }} readOnly={s.status !== 'ACTIVE' || !remaining}>
       <p className="small muted">Later/Skip은 답안을 유지하고 다음 문항으로 이동합니다.{r.triage && <> 현재 표시: {r.triage === 'LATER' ? 'Later' : 'Skip'} <button className="text-button" disabled={locked} onClick={() => dispatch({ type: 'triage', value: null })}>표시 해제</button></>}</p>
       {isChoice(q) ? <div className="choices" role="group" aria-labelledby="qf-question-heading">{Object.entries(q.options!).map(([key, value]) => <button key={key} data-choice="true" className={`choice ${r.selectedOption === key ? 'selected' : ''}`} disabled={locked} aria-pressed={r.selectedOption === key} onClick={() => dispatch({ type: 'choice', value: key })}><span className="choice-number">{key}</span><span>{Array.isArray(value) ? value.join(', ') : value}</span></button>)}<button className="text-button" disabled={locked || r.selectedOption === null} onClick={() => dispatch({ type: 'choice', value: null })}>답안 지우기</button></div> :
         <label className="qf-answer-label">{q.format === 'SHORT' ? '단답형 답안' : '서술형 답안'}<textarea key={qid} aria-label={q.format === 'SHORT' ? '단답형 답안' : '서술형 답안'} rows={q.format === 'SHORT' ? 3 : 8} value={r.textAnswer} maxLength={100000} disabled={locked} onChange={e => dispatch({ type: 'text', value: e.target.value })}/><span className="small muted">입력 즉시 자동 저장됩니다. 세트 제출 전까지 수정할 수 있습니다.</span></label>}
@@ -153,6 +148,7 @@ export function QFPlayer({ data, session, onSave, busy, recoveryRef }: { data: S
         </div>
         <p className="small muted qf-shortcut-hint">단축키: A–E 선지 · 1–5 확신도 · ←/→ 문항 이동</p>
       </fieldset>
+      </QFInk>
     </section><nav className="exam-navigator" aria-label="QF 문항 탐색"><h2>문항 탐색</h2><p className="small muted">✓ 답변 · — 미응답 · ○ 미방문<br/>L Later · S Skip</p><div className="exam-grid">{s.questionIds.map((id, i) => { const row = rows.find(r => r.questionId === id)!; return <button key={id} className={`exam-number ${hasQFAnswer(row) ? 'answered' : ''}`} aria-label={String(i + 1) + '번 문항'} aria-current={i === s.cursor ? 'step' : undefined} disabled={locked} onClick={() => navigate(i)}><strong>{i + 1}</strong><small>{hasQFAnswer(row) ? '✓' : row.shownAt === null ? '○' : '—'}{row.triage === 'LATER' ? ' L' : row.triage === 'SKIP' ? ' S' : ''}</small></button>; })}</div></nav></div>
     {error && <div className="alert" role="alert">{error}{failed.current && <div className="button-row"><button className="button secondary" disabled={busy} onClick={retry}>저장 재시도</button><button className="button secondary" onClick={() => downloadJSON(working.current, 'bio-sprint-qf-recovery.json')}>임시 기록 내보내기</button></div>}</div>}
     <div className="end-session">{confirmEnd ? <div className="end-confirm"><p>답변 {rows.filter(hasQFAnswer).length}/15문항. 제출하면 답안이 확정되고 결과가 공개됩니다.</p><div className="button-row"><button className="button secondary" disabled={locked} onClick={() => setConfirmEnd(false)}>계속 풀기</button><button className="button danger" disabled={locked || pending || busy} onClick={() => dispatch({ type: 'finish' })}>세트 제출하고 결과 보기</button></div></div> : <button className="button secondary" disabled={locked || pending || busy} onClick={() => setConfirmEnd(true)}>세트 제출</button>}</div>

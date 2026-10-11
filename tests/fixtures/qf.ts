@@ -4,13 +4,14 @@ function digest(q: Record<string, unknown>): string {
   const sorted = (v: unknown): string => Array.isArray(v) ? '[' + v.map(sorted).join(', ') + ']' : v && typeof v === 'object' ? '{' + Object.keys(v).sort().map(k => JSON.stringify(k) + ': ' + sorted((v as Record<string, unknown>)[k])).join(', ') + '}' : JSON.stringify(v);
   return createHash('sha256').update(sorted(Object.fromEntries(Object.entries(q).filter(([k]) => !['status', 'validation'].includes(k))))).digest('hex');
 }
-export function fixture(preset = 'daily15') {
+export function fixture(preset = 'daily15', extraStem = '') {
   const n = preset === 'daily15' ? 15 : 50;
   const stages = preset === 'daily15' ? [6, 6, 3] : [20, 20, 10];
   const questions = Array.from({ length: n }, (_, i) => {
     const stage = i < stages[0] ? 1 : i < stages[0] + stages[1] ? 2 : 3;
     const format = [1, 3, 5].includes(i) ? 'COMBINATION' : [stages[0], stages[0] + 1].includes(i) ? 'SHORT' : i === n - 1 ? 'CONSTRUCTED_RESPONSE' : 'MCQ';
     const q: Record<string, unknown> = { question_id: 'q' + String(i + 1).padStart(2, '0'), schema_version: 'phase2-2', status: 'READY', stage, level: stage === 1 ? 'BIO_I' : stage === 2 ? 'COLLEGE' : 'AP', format, topic: '합성 테스트', macro_domain: 'test', skill: 'Test', difficulty: 'NORMAL', knowledge_depth: 'STANDARD', reasoning_load: 'LOW', language_load: stage === 3 ? 'MEDIUM' : 'LOW', stem: '테스트 문항 ' + (i + 1), explanation: '테스트 해설', generation_notes: '공개 합성 테스트 자료', evidence_refs: ['e1'], style_refs: [], visual_dependencies: [], synthetic_data: true, hypothetical_context: true };
+    if (i === 1) q.stem += extraStem;
     if (format === 'MCQ' || format === 'COMBINATION') Object.assign(q, { options: format === 'MCQ' ? { A: '선택 하나', B: '선택 둘' } : { A: ['ㄴ', 'ㄱ'], B: ['ㄷ'] }, correct_answer: 'A', distractor_rationales: { B: '테스트 근거' }, ...(format === 'COMBINATION' ? { statements: { 'ㄱ': '첫 진술', 'ㄴ': '둘째 진술', 'ㄷ': '셋째 진술' } } : {}) });
     else Object.assign(q, { expected_answer: '예시 답', scoring_points: [{ point: '기준', acceptable: ['대체 답'], required_concepts: ['개념'], not_required: [] }] });
     const d = digest(q);

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { FAILURES, type FailureType, type StudyData } from './model';
 import { hasQFAnswer, SELF_GRADES, type QFSession, type SelfGrade } from './qfModel';
 import { gradeQF } from './qfEngine';
-import { QFPrompt } from './QFTraining';
+import { QFInk } from './ink/QFInk';
 import { QFStats } from './QFSummary';
 import { Link, seconds, type Save } from './ui';
 
@@ -26,7 +26,7 @@ export function QFReport({ data, session: s, onSave, busy }: { data: StudyData; 
   return <><header className="page-heading"><div><span className="eyebrow">QUESTION FACTORY</span><h1>DAILY-15 결과</h1><p className="qf-preserve">{s.runId} · {s.endReason === 'EXPIRED' ? '시간 종료' : '제출 완료'} · 풀이 시간 {seconds(s.endedAt! - s.startedAt)}</p></div><Link className="button secondary" href="/question-factory">세트 목록</Link></header>
     <QFStats data={data} sessionId={s.id}/>
     <nav className="qf-result-nav button-row" aria-label="QF 결과 문항">{s.questionIds.map((id, i) => <button className={`button ${i === index ? 'primary' : 'secondary'}`} key={id} onClick={() => setIndex(i)} aria-current={i === index ? 'step' : undefined}>{i + 1}번 · {label(id)}</button>)}</nav>
-    <section className="question-stage" key={w.id}><h2>{index + 1}번 · {label(w.id)} · {r.gradingMode === 'AUTO' ? '자동 채점' : '자기 채점'}</h2><QFPrompt q={q}/>
+    <section className="question-stage" key={w.id}><h2>{index + 1}번 · {label(w.id)} · {r.gradingMode === 'AUTO' ? '자동 채점' : '자기 채점'}</h2><QFInk q={q} scope={{ sessionId: s.id, runId: s.runId, questionId: w.id }} readOnly/>
       {q.options && <ol className="qf-review-options">{Object.entries(q.options).map(([key,v]) => <li key={key}><strong>{key}.</strong> {Array.isArray(v) ? v.join(', ') : v}</li>)}</ol>}
       <h3>내 답안</h3><pre className="qf-original">{r.gradingMode === 'AUTO' ? r.selectedOption ?? '미응답' : hasQFAnswer(r) ? r.textAnswer : '미응답'}</pre>
       <p className="small muted">풀이 {seconds(r.responseTimeMs)} · 방문 {r.visitCount}회{r.revisited ? ' · 재방문' : ''} · 답안 변경 {r.answerChangeCount}회</p>
