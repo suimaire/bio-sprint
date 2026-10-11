@@ -31,7 +31,7 @@ export function SharedInkToolbar({ tools, setTools, store, state }: { tools: Ink
   const colors = inkColors[highlight ? 'highlighter' : 'pen'];
   const width = highlight ? tools.highlighterWidth : tools.penWidth;
   return <div ref={root} className="ink-toolbar" role="toolbar" aria-label="공통 필기 도구" aria-orientation="vertical" onPointerDownCapture={() => finishInkGestures()}>
-    <span className="ink-active-label" data-active-surface={store.key.surface} aria-label="현재 필기 영역" aria-live="polite">{{ stem: '본문', statement: '진술', scratchpad: '노트' }[store.key.surface]}</span>
+    <span className="ink-active-label" data-active-surface={store.key.surface} aria-label="현재 필기 영역" aria-live="polite">{{ stem: '본문', statement: '진술', scratchpad: '노트', card: '여백·선지' }[store.key.surface]}</span>
     {([['pen', '펜'], ['highlighter', '형광펜'], ['eraser', '지우개']] as const).map(([tool, name]) => <button key={tool} type="button" className="ink-tool-button" aria-label={name} title={name} aria-pressed={tools.selectedTool === tool} onClick={() => {
       if (tools.selectedTool === tool && tool !== 'eraser') setPanel(panel === 'colors' ? null : 'colors');
       else { setTools({ ...tools, selectedTool: tool }); setPanel(null); }
@@ -51,7 +51,7 @@ export function SharedInkToolbar({ tools, setTools, store, state }: { tools: Ink
     {panel === 'settings' && <div className="ink-palette ink-settings" role="dialog" aria-label="필기 설정">
       <label className="ink-mouse"><input type="checkbox" checked={tools.mouseDevelopmentMode} onChange={e => setTools({ ...tools, mouseDevelopmentMode: e.target.checked })}/>마우스 필기 (개발용)</label>
       <button className="button secondary" disabled={!state.document.strokes.length} onClick={() => setConfirmClear(true)}>전체 지우기</button>
-      {confirmClear && <div className="ink-clear" role="group" aria-label="필기 지우기 확인"><p>현재 {{ stem: '본문', statement: '진술', scratchpad: '노트' }[store.key.surface]} 필기를 지울까요?</p><button className="button danger" onClick={() => { store.change(current => ({ ...current, strokes: [] })); setConfirmClear(false); }}>이 영역 지우기</button><button className="button secondary" onClick={() => setConfirmClear(false)}>취소</button></div>}
+      {confirmClear && <div className="ink-clear" role="group" aria-label="필기 지우기 확인"><p>현재 {{ stem: '본문', statement: '진술', scratchpad: '노트', card: '여백·선지' }[store.key.surface]} 필기를 지울까요?</p><button className="button danger" onClick={() => { store.change(current => ({ ...current, strokes: [] })); setConfirmClear(false); }}>이 영역 지우기</button><button className="button secondary" onClick={() => setConfirmClear(false)}>취소</button></div>}
     </div>}
   </div>;
 }

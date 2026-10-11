@@ -4,7 +4,7 @@ import { fixture } from './fixtures/qf';
 
 test.use({ viewport: { width: 1180, height: 820 }, hasTouch: true, trace: 'off', screenshot: 'off', video: 'off' });
 
-type KeyInput = Pick<KeyboardEventInit, 'key' | 'code' | 'location' | 'ctrlKey' | 'metaKey' | 'altKey' | 'isComposing' | 'keyCode' | 'repeat'>;
+type KeyInput = Pick<KeyboardEventInit, 'key' | 'code' | 'location' | 'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey' | 'isComposing' | 'keyCode' | 'repeat'>;
 
 async function keys(page: Page, events: KeyInput[]) {
   // One browser task deliberately leaves no React render/save gap between keys.
@@ -73,14 +73,27 @@ test('단축키 선택·왕복·빠른 연속 입력을 문항별로 저장하�
   await expect(page.getByRole('button', { name: '확신도 2', exact: true })).toHaveAttribute('aria-pressed', 'true');
 });
 
+test('물리 KeyB는 입력 언어와 Shift에 무관하게 선택하고 조합·일시정지는 제외한다', async ({ page }) => {
+  expect(await keys(page, [{ key: 'ㅠ', code: 'KeyB' }])).toEqual([true]);
+  await expect(page.locator('[data-choice]').nth(1)).toHaveAttribute('aria-pressed', 'true');
+  expect(await keys(page, [{ key: 'a', code: 'KeyA' }, { key: 'B', code: 'KeyB', shiftKey: true }, { key: '4' }, { key: 'ArrowRight' }, { key: 'ArrowLeft' }])).toEqual(Array(5).fill(true));
+  await expect(page.locator('[data-choice]').nth(1)).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('button', { name: '확신도 4', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  expect(await keys(page, [{ key: 'b', code: 'KeyB' }, { key: 'ㅁ', code: 'KeyA', isComposing: true }, { key: 'e', code: 'KeyE' }, { key: 'a', code: 'KeyQ' }])).toEqual([true, false, false, false]);
+  await page.getByRole('button', { name: '일시정지', exact: true }).click();
+  expect(await keys(page, [{ key: 'a', code: 'KeyA' }, { key: '4' }, { key: 'ArrowRight' }])).toEqual([false, false, false]);
+  await page.getByRole('button', { name: '이어서 풀기', exact: true }).click();
+  expect(await keys(page, [{ key: 'A', code: '' }])).toEqual([true]);
+});
+
 test('입력 필드·IME·수정키·길게 누르기는 단축키와 충돌하지 않는다', async ({ page }) => {
   expect(await keys(page, [
-    { key: 'b', ctrlKey: true }, { key: 'b', metaKey: true }, { key: 'b', altKey: true },
-    { key: 'b', isComposing: true }, { key: 'b', keyCode: 229 },
+    { key: 'b', code: 'KeyB', ctrlKey: true }, { key: 'b', code: 'KeyB', metaKey: true }, { key: 'b', code: 'KeyB', altKey: true },
+    { key: 'ㅠ', code: 'KeyB', isComposing: true }, { key: 'b', code: 'KeyB', keyCode: 229 },
     { key: 'ArrowRight', repeat: true }, { key: '4', repeat: true }, { key: 'Tab' },
   ])).toEqual(Array(8).fill(false));
   await page.locator('#qf-question-heading').dispatchEvent('compositionstart');
-  expect(await keys(page, [{ key: 'b' }, { key: '4' }, { key: 'ArrowRight' }])).toEqual([false, false, false]);
+  expect(await keys(page, [{ key: 'b', code: 'KeyB' }, { key: '4' }, { key: 'ArrowRight' }])).toEqual([false, false, false]);
   await page.locator('#qf-question-heading').dispatchEvent('compositionend');
   await expect(page.locator('#qf-question-heading')).toHaveText('테스트 문항 1');
   await expect(page.locator('[aria-pressed="true"]')).toHaveCount(0);
@@ -94,13 +107,14 @@ test('입력 필드·IME·수정키·길게 누르기는 단축키와 충돌하�
       document.querySelector('.qf-player')!.append(field);
       field.focus();
     }, tag);
-    expect(await keys(page, [{ key: 'b' }, { key: '4' }, { key: 'ArrowRight' }])).toEqual([false, false, false]);
+    expect(await keys(page, [{ key: 'b', code: 'KeyB' }, { key: '4' }, { key: 'ArrowRight' }])).toEqual([false, false, false]);
     await page.locator('#keyboard-test-field').evaluate(node => node.remove());
   }
   await page.getByRole('button', { name: '7번 문항', exact: true }).click();
-  expect(await keys(page, [{ key: 'A' }])).toEqual([false]);
+  expect(await keys(page, [{ key: 'A', code: 'KeyA' }])).toEqual([false]);
   const answer = page.getByLabel('단답형 답안', { exact: true });
   await answer.focus();
+  expect(await keys(page, [{ key: 'b', code: 'KeyB' }])).toEqual([false]);
   await page.keyboard.type('A4');
   await page.keyboard.press('ArrowLeft');
   await page.keyboard.type('B');

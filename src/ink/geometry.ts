@@ -9,16 +9,17 @@ export const STRAIGHT_LIMITS = {
 export const pointDistance = (a: ScreenPoint, b: ScreenPoint) => Math.hypot(b.x - a.x, b.y - a.y);
 
 // Input is already in rendered CSS pixels, never device pixels or viewBox units.
-export function isStraightCandidate(input: readonly ScreenPoint[]): boolean {
-  if (input.length < STRAIGHT_LIMITS.minSamples || input.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) return false;
+export type GeometryResult = 'LINE_ACCEPTED' | 'INSUFFICIENT_SAMPLES' | 'TOO_SHORT' | 'LOW_STRAIGHTNESS' | 'EXCESS_DEVIATION' | 'EXCESS_BACKTRACK' | 'SHARP_CORNER';
+export function classifyStraightCandidate(input: readonly ScreenPoint[]): GeometryResult {
+  if (input.length < STRAIGHT_LIMITS.minSamples || input.some(p => !Number.isFinite(p.x) || !Number.isFinite(p.y))) return 'INSUFFICIENT_SAMPLES';
   const points = [input[0]];
   for (const p of input.slice(1, -1)) if (pointDistance(points[points.length - 1], p) > STRAIGHT_LIMITS.sampleSpacing) points.push(p);
   const end = input[input.length - 1];
   if (pointDistance(points[points.length - 1], end) > STRAIGHT_LIMITS.sampleSpacing) points.push(end);
   else points[points.length - 1] = end;
-  if (points.length < STRAIGHT_LIMITS.minSamples) return false;
+  if (points.length < STRAIGHT_LIMITS.minSamples) return 'INSUFFICIENT_SAMPLES';
   const start = points[0], d = pointDistance(start, end);
-  if (d < STRAIGHT_LIMITS.minLength) return false;
+  if (d < STRAIGHT_LIMITS.minLength) return 'TOO_SHORT';
   const ux = (end.x - start.x) / d, uy = (end.y - start.y) / d;
   const deviation = Math.min(STRAIGHT_LIMITS.maxDeviation, Math.max(STRAIGHT_LIMITS.minDeviation, STRAIGHT_LIMITS.deviationRatio * d));
   let length = 0, backtracking = 0;
@@ -26,9 +27,10 @@ export function isStraightCandidate(input: readonly ScreenPoint[]): boolean {
     const a = points[i - 1], b = points[i], dx = b.x - a.x, dy = b.y - a.y;
     length += Math.hypot(dx, dy);
     backtracking += Math.max(0, -(dx * ux + dy * uy));
-    if (Math.abs((b.x - start.x) * uy - (b.y - start.y) * ux) > deviation) return false;
+    if (Math.abs((b.x - start.x) * uy - (b.y - start.y) * ux) > deviation) return 'EXCESS_DEVIATION';
   }
-  if (d / length < STRAIGHT_LIMITS.minRatio || backtracking > STRAIGHT_LIMITS.backtrackRatio * d) return false;
+  if (backtracking > STRAIGHT_LIMITS.backtrackRatio * d) return 'EXCESS_BACKTRACK';
+  if (d / length < STRAIGHT_LIMITS.minRatio) return 'LOW_STRAIGHTNESS';
   // Look across a meaningful span at each vertex so sub-pixel tremor is not a corner.
   for (let i = 1; i < points.length - 1; i++) {
     let before = i - 1, after = i + 1;
@@ -37,10 +39,11 @@ export function isStraightCandidate(input: readonly ScreenPoint[]): boolean {
     const a = points[before], b = points[i], c = points[after];
     const ab = pointDistance(a, b), bc = pointDistance(b, c);
     if (ab < STRAIGHT_LIMITS.cornerSpan || bc < STRAIGHT_LIMITS.cornerSpan) continue;
-    if (((b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y)) / (ab * bc) < Math.cos(STRAIGHT_LIMITS.maxTurnRadians)) return false;
+    if (((b.x - a.x) * (c.x - b.x) + (b.y - a.y) * (c.y - b.y)) / (ab * bc) < Math.cos(STRAIGHT_LIMITS.maxTurnRadians)) return 'SHARP_CORNER';
   }
-  return true;
+  return 'LINE_ACCEPTED';
 }
+export const isStraightCandidate = (input: readonly ScreenPoint[]) => classifyStraightCandidate(input) === 'LINE_ACCEPTED';
 
 export const pressureValue = (p: number) => Number.isFinite(p) && p > 0 ? Math.min(1, p) : .5;
 const n = (v: number) => Math.round(v * 100) / 100;

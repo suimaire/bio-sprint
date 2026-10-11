@@ -8,6 +8,7 @@ import { downloadJSON } from './storage';
 import { QFInk } from './ink/QFInk';
 import { finishInkGestures } from './ink/gestures';
 import { flushSessionInk } from './ink/store';
+import { inputDebug, safeCode, safeKey } from './inputDebug';
 export { QFPrompt } from './QFPrompt';
 
 export function QFSetup({ data, onSave, busy }: { data: StudyData; onSave: Save; busy: boolean }) {
@@ -34,6 +35,8 @@ export function QFSetup({ data, onSave, busy }: { data: StudyData; onSave: Save;
   </>;
 }
 export function QFPlayer({ data, session, onSave, onCancel, busy, recoveryRef }: { data: StudyData; session: QFSession; onSave: Save; onCancel: (id: string, expectedData: StudyData) => Promise<void>; busy: boolean; recoveryRef: { current: (() => StudyData | null) | null } }) {
+  const player = useRef<HTMLDivElement>(null);
+  const [keyDebug, setKeyDebug] = useState('keydown: waiting');
   const [draft, setDraft] = useState(data);
   const working = useRef(data), saved = useRef(data), saving = useRef(false);
   const saveTask = useRef<Promise<void> | null>(null), cancelling = useRef(false), changing = useRef(false);
@@ -133,38 +136,47 @@ export function QFPlayer({ data, session, onSave, onCancel, busy, recoveryRef }:
   }, []);
   useEffect(() => { if (!remaining && s.status === 'ACTIVE' && !failed.current && !cancelling.current && !changing.current) dispatch({ type: 'expire' }); });
   const navigate = (index: number) => { setConfirmEnd(false); dispatch({ type: 'navigate', index }); };
-  const onShortcut = useEffectEvent((event: KeyboardEvent) => {
-    if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey || confirmEnd || locked || changing.current || cancelling.current) return;
+  const onShortcut = useEffectEvent((event: KeyboardEvent, composing: boolean) => {
+    const diagnose = (reason: string) => { if (inputDebug) setKeyDebug(`keydown: received · key=${safeKey(event.key)} code=${safeCode(event.code)} · QFPlayer/${s.status} · focus=${document.activeElement?.tagName ?? 'none'} · ${reason}`); };
+    if (!player.current?.isConnected || player.current.closest('[hidden], [inert]') || document.visibilityState !== 'visible') { diagnose('inactive-screen'); return; }
+    if (composing || event.isComposing || event.keyCode === 229) { diagnose('composing'); return; }
+    if (event.defaultPrevented || event.repeat || event.metaKey || event.ctrlKey || event.altKey) { diagnose('browser-key-or-repeat'); return; }
+    if (confirmEnd || locked || changing.current || cancelling.current) { diagnose('locked-or-dialog'); return; }
     const editing = (target: EventTarget | null) => target instanceof HTMLElement &&
       (target.isContentEditable || !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
-    if (editing(event.target) || editing(document.activeElement)) return;
+    if (editing(event.target) || editing(document.activeElement)) { diagnose('editing'); return; }
 
     // dispatch updates this buffer synchronously, even before React renders or saves.
     const current = working.current.qfSessions?.find(item => item.id === session.id);
-    if (failed.current || !current || current.status !== 'ACTIVE' || !qfRemaining(current, Date.now())) return;
+    if (failed.current || !current || current.status !== 'ACTIVE' || !qfRemaining(current, Date.now())) { diagnose('inactive-session'); return; }
     const pack = working.current.qfPackages?.find(item => item.run_id === current.runId);
     if (pack?.preset !== 'daily15') return;
     const question = pack.questions.find(item => item.id === current.questionIds[current.cursor])?.question;
-    const key = event.key.toUpperCase();
+    // Physical A–E work across hardware layouts; older browsers can omit code.
+    const key = /^Key[A-Z]$/.test(event.code) ? event.code.slice(3) : event.key.toUpperCase();
+    diagnose('unmapped-or-unavailable-option');
     if (/^[A-E]$/.test(key) && question && isChoice(question) && Object.hasOwn(question.options!, key)) {
       event.preventDefault();
       dispatch({ type: 'choice', value: key });
+      diagnose('choice');
     } else if (/^[1-5]$/.test(event.key)) {
       // KeyboardEvent.key covers both the number row and the numeric keypad.
       event.preventDefault();
       dispatch({ type: 'confidence', value: Number(event.key) as 1 | 2 | 3 | 4 | 5 });
+      diagnose('confidence');
     } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
       const index = current.cursor + (event.key === 'ArrowLeft' ? -1 : 1);
       if (index < 0 || index >= current.questionIds.length) return;
       event.preventDefault();
       navigate(index);
+      diagnose('navigate');
     }
   });
   useEffect(() => {
     let composing = false;
     const startComposition = () => { composing = true; };
     const endComposition = () => { composing = false; };
-    const keydown = (event: KeyboardEvent) => { if (!composing) onShortcut(event); };
+    const keydown = (event: KeyboardEvent) => onShortcut(event, composing);
     window.addEventListener('keydown', keydown);
     window.addEventListener('compositionstart', startComposition);
     window.addEventListener('compositionend', endComposition);
@@ -174,7 +186,8 @@ export function QFPlayer({ data, session, onSave, onCancel, busy, recoveryRef }:
       window.removeEventListener('compositionend', endComposition);
     };
   }, []);
-  return <div className="exam-player qf-player">
+  return <div ref={player} className="exam-player qf-player">
+    {inputDebug && <output className="input-debug">{keyDebug}</output>}
     <header className="exam-toolbar"><div><span className="eyebrow">QUESTION FACTORY · DAILY-15</span><h1>세트 훈련 <span>{s.cursor + 1} / 15</span></h1><span className="small muted" role="status">{pending ? '답안 저장 중…' : '답안 저장됨'} · 답변 {rows.filter(hasQFAnswer).length}/15</span></div><div className={`session-countdown ${remaining < 60000 ? 'urgent' : ''}`}><span>남은 시간</span><strong role="timer" aria-label="DAILY-15 남은 시간">{clockText(remaining)}</strong></div>
       {s.status === 'ACTIVE' && <div className="qf-session-actions button-row"><button className="button secondary" disabled={locked} onClick={() => void pauseTraining()}>일시정지</button><button className="button secondary qf-cancel-button" disabled={transition || cancelling.current} onClick={() => { finishInkGestures(); setConfirmEnd(false); setConfirmCancel(true); }}>훈련 취소</button></div>}
       <div className="qf-movement button-row"><button className="button secondary" disabled={locked || s.cursor === 0} onClick={() => navigate(s.cursor - 1)}>이전 문항</button><button className="button primary" disabled={locked || s.cursor === 14} onClick={() => navigate(s.cursor + 1)}>다음 문항</button><button className="button secondary" disabled={locked} onClick={() => dispatch({ type: 'triage', value: 'LATER' })}>Later · 나중에</button><button className="button secondary" disabled={locked} onClick={() => dispatch({ type: 'triage', value: 'SKIP' })}>Skip · 건너뛰기</button></div>
@@ -182,9 +195,9 @@ export function QFPlayer({ data, session, onSave, onCancel, busy, recoveryRef }:
     <div className={`qf-session-content ${s.status === 'PAUSED' ? 'qf-paused' : ''}`}>
     {s.status === 'PAUSED' && <section className="qf-pause-panel" aria-label="일시정지"><h2>훈련이 일시정지되었습니다.</h2><p>남은 시간: {clockText(remaining)}</p><div className="button-row"><button ref={resumeButton} className="button primary" disabled={transition || pending || busy || failed.current || cancelling.current} onClick={() => void resumeTraining()}>이어서 풀기</button><button className="button secondary qf-cancel-button" disabled={transition || cancelling.current} onClick={() => setConfirmCancel(true)}>훈련 취소</button></div>{pauseError && <p className="alert" role="alert">{pauseError}</p>}</section>}
     <div className="exam-layout" inert={locked}><section className="question-stage exam-question" aria-label="QF 풀이 문항">
-      <QFInk key={qid} q={q} scope={{ sessionId: s.id, runId: s.runId, questionId: qid }} readOnly={locked}>
+      <QFInk key={qid} q={q} scope={{ sessionId: s.id, runId: s.runId, questionId: qid }} readOnly={locked} controls={<>
       <p className="small muted">Later/Skip은 답안을 유지하고 다음 문항으로 이동합니다.{r.triage && <> 현재 표시: {r.triage === 'LATER' ? 'Later' : 'Skip'} <button className="text-button" disabled={locked} onClick={() => dispatch({ type: 'triage', value: null })}>표시 해제</button></>}</p>
-      {isChoice(q) ? <div className="choices" role="group" aria-labelledby="qf-question-heading">{Object.entries(q.options!).map(([key, value]) => <button key={key} data-choice="true" className={`choice ${r.selectedOption === key ? 'selected' : ''}`} disabled={locked} aria-pressed={r.selectedOption === key} onClick={() => dispatch({ type: 'choice', value: key })}><span className="choice-number">{key}</span><span>{Array.isArray(value) ? value.join(', ') : value}</span></button>)}<button className="text-button" disabled={locked || r.selectedOption === null} onClick={() => dispatch({ type: 'choice', value: null })}>답안 지우기</button></div> :
+      {isChoice(q) ? <button className="text-button" disabled={locked || r.selectedOption === null} onClick={() => dispatch({ type: 'choice', value: null })}>답안 지우기</button> :
         <label className="qf-answer-label">{q.format === 'SHORT' ? '단답형 답안' : '서술형 답안'}<textarea key={qid} aria-label={q.format === 'SHORT' ? '단답형 답안' : '서술형 답안'} rows={q.format === 'SHORT' ? 3 : 8} value={r.textAnswer} maxLength={100000} disabled={locked} onChange={e => dispatch({ type: 'text', value: e.target.value })}/><span className="small muted">입력 즉시 자동 저장됩니다. 세트 제출 전까지 수정할 수 있습니다.</span></label>}
       <fieldset className="qf-confidence"><legend>확신도</legend>
         <div className="qf-confidence-actions">
@@ -193,6 +206,8 @@ export function QFPlayer({ data, session, onSave, onCancel, busy, recoveryRef }:
         </div>
         <p className="small muted qf-shortcut-hint">단축키: A–E 선지 · 1–5 확신도 · ←/→ 문항 이동</p>
       </fieldset>
+      </>}>
+      {isChoice(q) && <div className="choices" role="group" aria-labelledby="qf-question-heading">{Object.entries(q.options!).map(([key, value]) => <button key={key} data-choice="true" className={`choice ${r.selectedOption === key ? 'selected' : ''}`} disabled={locked} aria-pressed={r.selectedOption === key} onClick={() => dispatch({ type: 'choice', value: key })}><span className="choice-number">{key}</span><span>{Array.isArray(value) ? value.join(', ') : value}</span></button>)}</div>}
       </QFInk>
     </section><nav className="exam-navigator" aria-label="QF 문항 탐색"><h2>문항 탐색</h2><p className="small muted">✓ 답변 · — 미응답 · ○ 미방문<br/>L Later · S Skip</p><div className="exam-grid">{s.questionIds.map((id, i) => { const row = rows.find(r => r.questionId === id)!; return <button key={id} className={`exam-number ${hasQFAnswer(row) ? 'answered' : ''}`} aria-label={String(i + 1) + '번 문항'} aria-current={i === s.cursor ? 'step' : undefined} disabled={locked} onClick={() => navigate(i)}><strong>{i + 1}</strong><small>{hasQFAnswer(row) ? '✓' : row.shownAt === null ? '○' : '—'}{row.triage === 'LATER' ? ' L' : row.triage === 'SKIP' ? ' S' : ''}</small></button>; })}</div></nav></div>
     </div>

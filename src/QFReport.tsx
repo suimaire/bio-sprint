@@ -26,8 +26,9 @@ export function QFReport({ data, session: s, onSave, busy }: { data: StudyData; 
   return <><header className="page-heading"><div><span className="eyebrow">QUESTION FACTORY</span><h1>DAILY-15 결과</h1><p className="qf-preserve">{s.runId} · {s.endReason === 'EXPIRED' ? '시간 종료' : '제출 완료'} · 풀이 시간 {seconds(qfActiveTime(s, s.endedAt!))}</p></div><Link className="button secondary" href="/question-factory">세트 목록</Link></header>
     <QFStats data={data} sessionId={s.id}/>
     <nav className="qf-result-nav button-row" aria-label="QF 결과 문항">{s.questionIds.map((id, i) => <button className={`button ${i === index ? 'primary' : 'secondary'}`} key={id} onClick={() => setIndex(i)} aria-current={i === index ? 'step' : undefined}>{i + 1}번 · {label(id)}</button>)}</nav>
-    <section className="question-stage" key={w.id}><h2>{index + 1}번 · {label(w.id)} · {r.gradingMode === 'AUTO' ? '자동 채점' : '자기 채점'}</h2><QFInk q={q} scope={{ sessionId: s.id, runId: s.runId, questionId: w.id }} readOnly/>
-      {q.options && <ol className="qf-review-options">{Object.entries(q.options).map(([key,v]) => <li key={key}><strong>{key}.</strong> {Array.isArray(v) ? v.join(', ') : v}</li>)}</ol>}
+    <section className="question-stage" key={w.id}><h2>{index + 1}번 · {label(w.id)} · {r.gradingMode === 'AUTO' ? '자동 채점' : '자기 채점'}</h2><QFInk q={q} scope={{ sessionId: s.id, runId: s.runId, questionId: w.id }} readOnly>
+      {q.options && <div className="choices">{Object.entries(q.options).map(([key,v]) => <div className="choice" key={key}><span className="choice-number">{key}</span><span>{Array.isArray(v) ? v.join(', ') : v}</span></div>)}</div>}
+      </QFInk>
       <h3>내 답안</h3><pre className="qf-original">{r.gradingMode === 'AUTO' ? r.selectedOption ?? '미응답' : hasQFAnswer(r) ? r.textAnswer : '미응답'}</pre>
       <p className="small muted">풀이 {seconds(r.responseTimeMs)} · 방문 {r.visitCount}회{r.revisited ? ' · 재방문' : ''} · 답안 변경 {r.answerChangeCount}회</p>
       <div className="feedback"><h3>{r.gradingMode === 'AUTO' ? '정답' : '예시 정답 · expected_answer'}</h3><p className="qf-preserve">{q.correct_answer ?? q.expected_answer}</p>

@@ -24,6 +24,186 @@ const note = (page: Page) => page.locator('svg[data-ink-surface="scratchpad"]');
 const stem = (page: Page) => page.locator('svg[data-ink-surface="stem"]');
 const sharedTools = (page: Page) => page.getByRole('toolbar', { name: '공통 필기 도구' });
 
+async function drawAt(page: Page, target: Locator, dx = 6, dy = 6) {
+  await target.scrollIntoViewIfNeeded();
+  await target.evaluate((el, dy) => window.scrollBy(0, el.getBoundingClientRect().top + dy - innerHeight * .6), dy);
+  const box = (await target.boundingBox())!;
+  return page.evaluate(({ x, y }) => {
+    const el = document.elementFromPoint(x, y)!;
+    const send = (type: string, px: number) => {
+      const event = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 71, pointerType: 'pen', clientX: px, clientY: y, pressure: .6, button: 0 });
+      el.dispatchEvent(event); return event.defaultPrevented;
+    };
+    const accepted = send('pointerdown', x);
+    send('pointermove', x + 15); send('pointermove', x + 30); send('pointerup', x + 40);
+    // A Pencil click must never select the answer under the new transparent surface.
+    el.dispatchEvent(new PointerEvent('click', { bubbles: true, cancelable: true, pointerType: 'pen', pointerId: 71 }));
+    return accepted;
+  }, { x: box.x + dx, y: box.y + dy });
+}
+
+test('본문 아래와 선지 주변 여백에 쓰고 손가락 선지 선택을 통과시킨다', async ({ page }) => {
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  await expect(stem(page)).toHaveAttribute('data-ready', 'true');
+  // The option's native target is hit, not a manually dispatched overlay event.
+  expect(await drawAt(page, page.locator('[data-choice]').first())).toBe(true);
+  await expect(page.locator('[data-choice]').first()).toHaveAttribute('aria-pressed', 'false');
+  await expect(page.locator('svg[data-ink-surface="card"] [data-stroke]')).toHaveCount(1);
+  await page.locator('[data-choice]').nth(1).tap();
+  await expect(page.locator('[data-choice]').nth(1)).toHaveAttribute('aria-pressed', 'true');
+  expect(await drawAt(page, page.locator('.ink-card-sheet'), 8, 8)).toBe(true);
+  await expect(page.locator('svg[data-ink-surface="card"] [data-stroke]')).toHaveCount(2);
+  await expect(page.locator('[data-ink-status="card"]')).toContainText('필기 저장됨');
+  await page.reload();
+  await expect(page.locator('svg[data-ink-surface="card"] [data-stroke]')).toHaveCount(2);
+  const optionPositions = () => page.locator('.ink-card-sheet .choice').evaluateAll(options => options.map(el => {
+    const rect = el.getBoundingClientRect(), card = el.closest('.ink-card-sheet')!.getBoundingClientRect();
+    return { x: rect.left - card.left, y: rect.top - card.top, width: rect.width, height: rect.height };
+  }));
+  const beforeSubmit = await optionPositions();
+  await page.getByRole('button', { name: '세트 제출', exact: true }).click();
+  await page.getByRole('button', { name: '세트 제출하고 결과 보기' }).click();
+  await expect(page.getByRole('heading', { name: 'DAILY-15 결과', exact: true })).toBeVisible();
+  await expect(page.locator('svg[data-ink-surface="card"] [data-stroke]')).toHaveCount(2);
+  expect(await optionPositions()).toEqual(beforeSubmit);
+  expect(await drawAt(page, page.locator('.choice').first())).toBe(false);
+});
+
+test('본문·진술 사이·좌우와 아래 여백을 연결하고 회전·노트·높이 변경에도 좌표를 유지한다', async ({ page }) => {
+  await page.keyboard.press('ArrowRight');
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  await expect(stem(page)).toHaveAttribute('data-ready', 'true');
+  expect(await drawAt(page, page.locator('#qf-question-heading'), 100, 30)).toBe(true);
+  const statements = page.locator('.qf-statements');
+  // Gap following the first row, still on the original statement surface.
+  expect(await drawAt(page, statements, 100, 47)).toBe(true);
+  const sheet = page.locator('.ink-card-sheet');
+  const sheetBox = (await sheet.boundingBox())!;
+  expect(await drawAt(page, sheet, sheetBox.width - 50, 180)).toBe(true);
+  expect(await drawAt(page, sheet, 12, 180)).toBe(true);
+  expect(await drawAt(page, sheet, 60, sheetBox.height - 20)).toBe(true);
+  await expect(stem(page).locator('[data-stroke]')).toHaveCount(1);
+  await expect(page.locator('[data-ink-surface="statement"] [data-stroke]')).toHaveCount(1);
+  await expect(page.locator('[data-ink-surface="card"] [data-stroke]')).toHaveCount(3);
+  const geometry = () => page.locator('.ink-card-sheet [data-stroke]').evaluateAll(nodes => nodes.map(node => {
+    const svg = node.closest('svg')!, m = svg.getScreenCTM()!, heading = document.querySelector('#qf-question-heading')!.getBoundingClientRect();
+    return { d: node.getAttribute('d'), x: Math.round((m.e - heading.left) / m.a), y: Math.round((m.f - heading.top) / m.d) };
+  }));
+  const before = await geometry();
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await page.locator('.ink-card-scroll').evaluate(el => { el.scrollLeft = 80; });
+  expect(await geometry()).toEqual(before);
+  await openNote(page);
+  await page.setViewportSize({ width: 1366, height: 1024 });
+  expect(await geometry()).toEqual(before);
+  await page.getByRole('button', { name: '넓게 보기', exact: true }).click();
+  expect(await geometry()).toEqual(before);
+  await page.getByRole('button', { name: '노트 닫기', exact: true }).click();
+  await page.locator('.ink-card-sheet>.ink-annotation-text').evaluate(el => { (el as HTMLElement).style.paddingBottom = '250px'; });
+  await expect(page.locator('[data-ink-status="card"]')).toContainText('필기 저장됨');
+  expect(await geometry()).toEqual(before);
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await page.reload();
+  await expect(page.locator('[data-ink-surface="card"] [data-stroke]')).toHaveCount(3);
+  expect(Math.round((await sheet.boundingBox())!.width)).toBe(Math.round(sheetBox.width));
+  expect(await geometry()).toEqual(before);
+});
+
+test('Pencil 획은 본문 경계를 지나 여백으로 이어지고 손가락은 실제 스크롤한다', async ({ page, context }) => {
+  await page.keyboard.press('ArrowRight');
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  await expect(stem(page)).toHaveAttribute('data-ready', 'true');
+  await contact(stem(page), 'start');
+  const height = Number((await stem(page).getAttribute('viewBox'))!.split(' ')[3]);
+  await contact(stem(page), 'move', 650, height + 20);
+  await contact(stem(page), 'pointerup', 650, height + 20);
+  const path = await stem(page).locator('[data-stroke]').getAttribute('d');
+  expect(path).toContain('650');
+  await page.setViewportSize({ width: 768, height: 1024 });
+  await page.evaluate(() => window.scrollTo(0, 300));
+  const before = await page.evaluate(() => scrollY);
+  const client = await context.newCDPSession(page);
+  await client.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: 350, y: 800 }] });
+  for (const y of [750, 650, 550, 450]) {
+    await client.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: 350, y }] });
+    await page.waitForTimeout(25);
+  }
+  await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await expect.poll(() => page.evaluate(() => scrollY)).toBeGreaterThan(before + 50);
+  await expect(stem(page).locator('[data-stroke]')).toHaveCount(1);
+  await page.locator('[data-choice]').nth(1).tap();
+  await expect(page.locator('[data-choice]').nth(1)).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('경계를 넘은 획을 보이는 끝에서 지우고 원래 표면의 Undo로 복원한다', async ({ page }) => {
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  await expect(stem(page)).toHaveAttribute('data-ready', 'true');
+  await contact(stem(page), 'start');
+  await contact(stem(page), 'move', -20, 40); await contact(stem(page), 'pointerup', -20, 40);
+  await sharedTools(page).getByRole('button', { name: '지우개', exact: true }).click();
+  const sheet = page.locator('.ink-card-sheet');
+  const offset = (await stem(page).boundingBox())!.y - (await sheet.boundingBox())!.y + 40;
+  expect(await drawAt(page, sheet, 12, offset)).toBe(true);
+  await expect(stem(page).locator('[data-stroke]')).toHaveCount(0);
+  await expect(sharedTools(page).locator('[data-active-surface]')).toHaveText('본문');
+  await sharedTools(page).getByRole('button', { name: '실행 취소', exact: true }).click();
+  await expect(stem(page).locator('[data-stroke]')).toHaveCount(1);
+  await sharedTools(page).getByRole('button', { name: '펜', exact: true }).click();
+  expect(await drawAt(page, sheet, 12, offset + 25)).toBe(true);
+  await expect(page.locator('[data-ink-surface="card"] [data-stroke]')).toHaveCount(1);
+  await sharedTools(page).getByRole('button', { name: '지우개', exact: true }).click();
+  expect(await drawAt(page, page.locator('.ink-annotation-sheet'), 20, 65)).toBe(true);
+  await expect(page.locator('[data-ink-surface="card"] [data-stroke]')).toHaveCount(0);
+  await expect(sharedTools(page).locator('[data-active-surface]')).toHaveText('여백·선지');
+});
+
+test('coalesced 손떨림 중 1000ms에 추가 move 없이 직선 미리보기를 표시한다', async ({ page }) => {
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  await expect(stem(page)).toHaveAttribute('data-ready', 'true');
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await contact(stem(page), 'start'); await contact(stem(page), 'move', 144, 40);
+  for (let i = 0; i < 9; i++) {
+    await page.clock.runFor(100);
+    await stem(page).evaluate((el, i) => {
+      const matrix = (el as SVGSVGElement).getScreenCTM()!;
+      const sample = (x: number, y: number) => {
+        const p = new DOMPoint(x, y).matrixTransform(matrix);
+        return new PointerEvent('pointermove', { bubbles: true, cancelable: true, pointerId: 51, pointerType: 'pen', clientX: p.x, clientY: p.y, pressure: i % 2 ? .2 : .8 });
+      };
+      const e = sample(i % 2 ? 142 : 146, 40);
+      Object.defineProperty(e, 'getCoalescedEvents', { value: () => [sample(144, 41), sample(143, 39)] });
+      el.dispatchEvent(e);
+    }, i);
+  }
+  await page.clock.runFor(99);
+  await expect(stem(page).locator('[data-ink-preview] path')).toHaveAttribute('data-shape', 'freehand');
+  await page.clock.runFor(17); // 1000ms timer plus one animation frame.
+  await expect(stem(page).locator('[data-ink-preview] path')).toHaveAttribute('data-shape', 'line');
+  await contact(stem(page), 'pointerup', 180, 40);
+  await expect(stem(page).locator('[data-stroke]')).toHaveAttribute('data-shape', 'line');
+});
+
+for (const shape of ['circle', 'U', 'zigzag'] as const) test(`1초 정지한 ${shape} 획은 자유곡선을 유지한다`, async ({ page }) => {
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  const card = page.locator('svg[data-ink-surface="card"]');
+  await expect(card).toHaveAttribute('data-ready', 'true');
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await card.evaluate((el, shape) => {
+    const matrix = (el as SVGSVGElement).getScreenCTM()!;
+    const points = shape === 'circle' ? Array.from({ length: 41 }, (_, i) => ({ x: 100 + 50 * Math.cos(i * Math.PI / 20), y: 100 + 50 * Math.sin(i * Math.PI / 20) })) :
+      shape === 'U' ? Array.from({ length: 21 }, (_, i) => ({ x: 50 + i * 5, y: 60 + 60 * Math.sin(i * Math.PI / 20) })) :
+      [{ x: 40, y: 70 }, { x: 65, y: 100 }, { x: 90, y: 40 }, { x: 115, y: 100 }, { x: 140, y: 70 }];
+    points.forEach((point, i) => {
+      const p = new DOMPoint(point.x, point.y).matrixTransform(matrix);
+      el.dispatchEvent(new PointerEvent(i ? 'pointermove' : 'pointerdown', { bubbles: true, cancelable: true, pointerType: 'pen', pointerId: 51, clientX: p.x, clientY: p.y, button: 0, pressure: .6 }));
+    });
+  }, shape);
+  await page.clock.runFor(1017);
+  await expect(card.locator('[data-ink-preview] path')).toHaveAttribute('data-shape', 'freehand');
+  await contact(card, 'pointerup');
+  await expect(card.locator('[data-stroke]')).toHaveAttribute('data-shape', 'freehand');
+});
+
 async function contact(canvas: Locator, phase: 'start' | 'move' | 'pointerup' | 'pointercancel' | 'lostpointercapture', x = 140, y = 40) {
   await canvas.evaluate((el, { phase, x, y }) => {
     const matrix = (el as SVGSVGElement).getScreenCTM()!;

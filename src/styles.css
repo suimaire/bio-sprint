@@ -93,6 +93,21 @@
 .ink-canvas { display:block; width:100%; height:auto; touch-action:auto; }
 .ink-canvas.ink-enabled { cursor:crosshair; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
 .ink-annotation-sheet>.ink-canvas { position:absolute; inset:0; width:100%; height:100%; }
+/* One fixed-layout, horizontally scrollable card. Legacy 640px text surfaces
+   retain their own origins; the additive card surface never migrates old ink.
+   Height changes add space rather than scaling coordinates or wrapping text. */
+.ink-card-scroll { max-width:100%; overflow:auto; -webkit-overflow-scrolling:touch; touch-action:auto; }
+.ink-card-sheet { position:relative; isolation:isolate; background:#fff; -webkit-text-size-adjust:none; text-size-adjust:none; }
+.ink-card-sheet>.ink-annotation-text { padding:24px 32px 48px; font-size:14px; }
+.ink-card-sheet>.ink-annotation-text>* { width:640px; max-width:640px; }
+.ink-card-sheet>.ink-canvas { position:absolute; inset:0; width:100%; height:100%; z-index:2; }
+.ink-card-sheet .ink-annotation-scroll { overflow:visible; }
+.ink-card-sheet .ink-annotation-sheet { background:transparent; }
+.ink-card-sheet .ink-annotation-sheet>.ink-canvas { overflow:visible; z-index:2; }
+.ink-card-sheet .choices { margin:28px 0 0; gap:16px; }
+.ink-card-sheet .choice { min-height:60px; font-size:17px; line-height:30px; }
+.ink-canvas[data-ink-debug=true] { outline:1px dashed #c43e36; }
+.input-debug { display:block; font-size:11px; color:#923c25; overflow-wrap:anywhere; }
 .ink-note { min-width:0; padding:14px; background:#f6f8f3; border:1px solid #d6e2d5; border-radius:10px; }
 .ink-note h3 { margin-right:auto; font-size:16px; }
 .ink-note-scroll { max-height:70vh; overflow:auto; border:1px solid #d6e2d5; border-radius:5px; background:white; }

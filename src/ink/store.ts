@@ -62,12 +62,12 @@ export class InkStore {
     this.redoStack = [];
     this.publish({ document }); void this.flush();
   }
-  commitStroke(stroke: InkStroke, original?: InkStroke, height?: number) {
+  commitStroke(stroke: InkStroke, original?: InkStroke, height?: number, width?: number) {
     if (this.disposed) return;
     finishInkGestures();
     if (!this.state.loaded) return;
     const current = this.state.document;
-    const append = (s: InkStroke): InkDocument => ({ ...current, height: height ?? current.height, strokes: [...current.strokes, s] });
+    const append = (s: InkStroke): InkDocument => ({ ...current, width: width ?? current.width, height: height ?? current.height, strokes: [...current.strokes, s] });
     this.undoStack.push(current);
     // Keep the freehand state in history only. Publish and persist the final state once.
     if (original) this.undoStack.push(append(original));

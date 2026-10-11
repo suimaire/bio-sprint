@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { QFPrompt } from '../QFPrompt';
 import type { QFQuestion } from '../qfModel';
-import { ANNOTATION_WIDTH, defaultTools, inkKey, surfaceLabels, type InkScope, type InkSurface } from './model';
+import { ANNOTATION_WIDTH, CARD_WIDTH, defaultTools, inkKey, surfaceLabels, type InkScope, type InkSurface } from './model';
 import { getInkStore, type InkStore } from './store';
 import { InkCanvas } from './InkCanvas';
 import { SharedInkToolbar } from './InkToolbar';
@@ -20,21 +20,25 @@ function InkStatus({ store }: { store: InkStore }) {
 }
 function Annotation({ store, enabled, selected, tools, children, onActive }: { store: InkStore; enabled: boolean; selected: boolean; tools: typeof defaultTools; children: ReactNode; onActive: () => void }) {
   const state = useInk(store), content = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState(160);
+  const [size, setSize] = useState({ width: store.key.surface === 'card' ? CARD_WIDTH : ANNOTATION_WIDTH, height: 160 });
   useLayoutEffect(() => {
     const el = content.current!;
-    const measure = () => setHeight(Math.max(1, el.offsetHeight));
+    const measure = () => setSize(previous => {
+      const next = { width: Math.max(1, el.offsetWidth), height: Math.max(1, el.offsetHeight) };
+      return previous.width === next.width && previous.height === next.height ? previous : next;
+    });
     measure(); const observer = new ResizeObserver(measure); observer.observe(el);
     return () => observer.disconnect();
   }, []);
-  return <div className="ink-annotation-scroll" aria-label={surfaceLabels[store.key.surface] + ' · 좁은 화면에서 가로 스크롤'}>
-    <div className={`ink-annotation-sheet ${enabled ? 'ink-annotation-active' : ''}`} data-active-ink={enabled && selected} style={{ width: ANNOTATION_WIDTH }}>
+  const card = store.key.surface === 'card';
+  return <div className={card ? 'ink-card-scroll' : 'ink-annotation-scroll'} aria-label={surfaceLabels[store.key.surface] + ' · 좁은 화면에서 가로 스크롤'}>
+    <div className={`${card ? 'ink-card-sheet' : 'ink-annotation-sheet'} ${enabled ? 'ink-annotation-active' : ''}`} data-ink-input={store.key.surface} data-active-ink={enabled && selected} style={{ width: card ? `max(100%, ${Math.max(CARD_WIDTH, state.document.width)}px)` : ANNOTATION_WIDTH }}>
       <div className="ink-annotation-text" ref={content}>{children}</div>
-      <InkCanvas document={state.document} surface={store.key.surface} height={height} tools={tools} enabled={enabled} ready={state.loaded} onActive={onActive} onStroke={({ stroke, original }, height) => store.commitStroke(stroke, original, height)} onChange={doc => store.change(doc)}/>
+      <InkCanvas document={state.document} surface={store.key.surface} height={size.height} width={size.width} tools={tools} enabled={enabled} ready={state.loaded} onActive={onActive} onStroke={({ stroke, original }, height) => store.commitStroke(stroke, original, height, size.width)} onChange={doc => store.change(doc)}/>
     </div>
   </div>;
 }
-export function QFInk({ scope, q, readOnly = false, children }: { scope: InkScope; q: QFQuestion; readOnly?: boolean; children?: ReactNode }) {
+export function QFInk({ scope, q, readOnly = false, children, controls }: { scope: InkScope; q: QFQuestion; readOnly?: boolean; children?: ReactNode; controls?: ReactNode }) {
   const [annotation, setAnnotation] = useState(false), [noteOpen, setNoteOpen] = useState(false), [expanded, setExpanded] = useState(false);
   const [tools, setTools] = useState(defaultTools);
   const [activeSurface, setActiveSurface] = useState<InkSurface>('stem'), [exportError, setExportError] = useState('');
@@ -47,7 +51,8 @@ export function QFInk({ scope, q, readOnly = false, children }: { scope: InkScop
     return () => observer.disconnect();
   }, []);
   const stemStore = getInkStore(inkKey(scope, 'stem')), statementStore = getInkStore(inkKey(scope, 'statement')), noteStore = getInkStore(inkKey(scope, 'scratchpad'));
-  const activeStore = activeSurface === 'scratchpad' ? noteStore : activeSurface === 'statement' ? statementStore : stemStore;
+  const cardStore = getInkStore(inkKey(scope, 'card'));
+  const activeStore = activeSurface === 'card' ? cardStore : activeSurface === 'scratchpad' ? noteStore : activeSurface === 'statement' ? statementStore : stemStore;
   const activeState = useInk(activeStore), noteState = useInk(noteStore);
   const updateTools = (next: typeof tools) => { finishInkGestures(); setTools(next); };
   const toggleAnnotation = () => {
@@ -75,9 +80,12 @@ export function QFInk({ scope, q, readOnly = false, children }: { scope: InkScop
     <div className={`ink-body ${!readOnly ? 'ink-body-editable' : ''}`}>
     {!readOnly && <div className="ink-toolbar-rail">{(annotation || noteOpen) && <SharedInkToolbar tools={tools} setTools={updateTools} store={activeStore} state={activeState}/>}</div>}
     <div className="ink-workspace-grid"><div className="ink-question-content">
+      <Annotation store={cardStore} enabled={annotation && !readOnly} selected={activeSurface === 'card'} tools={tools} onActive={() => setActiveSurface('card')}>
       <QFPrompt q={q} wrapInk={(surface, content) => <Annotation store={surface === 'stem' ? stemStore : statementStore} enabled={annotation && !readOnly} selected={activeSurface === surface} tools={tools} onActive={() => setActiveSurface(surface)}>{content}</Annotation>}/>
       {children}
-      {annotation && <div className="ink-annotation-status"><p className="small muted">Apple Pencil로 필기 · 손가락으로 스크롤 · 좁은 지문은 가로 스크롤</p><InkStatus store={stemStore}/>{q.format === 'COMBINATION' && <InkStatus store={statementStore}/>}</div>}
+      </Annotation>
+      {controls}
+      {annotation && <div className="ink-annotation-status"><p className="small muted">Apple Pencil로 본문·진술·여백·선지에 필기 · 손가락으로 선택·스크롤</p><InkStatus store={stemStore}/>{q.format === 'COMBINATION' && <InkStatus store={statementStore}/>}<InkStatus store={cardStore}/></div>}
     </div>
     {noteOpen && <aside className="ink-note" data-active-ink={!readOnly && activeSurface === 'scratchpad'} aria-label="문항별 풀이 노트">
       <div className="ink-actions button-row"><h3>풀이 노트</h3><button className="button secondary" aria-expanded={expanded} onClick={() => { finishInkGestures(); setExpanded(v => !v); }}>{expanded ? '나란히 보기' : '넓게 보기'}</button><button className="button secondary" onClick={toggleNote}>노트 닫기</button></div>

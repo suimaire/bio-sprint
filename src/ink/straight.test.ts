@@ -55,6 +55,8 @@ describe('contact-only hold (monotonic fake time)', () => {
   });
   it.each(Object.entries(curves))('holds %s without changing it', (_, points) => {
     vi.useFakeTimers(); const g = gesture(points); vi.advanceTimersByTime(1500);
+    expect(g.result).toBe('HOLD_REACHED_GEOMETRY_REJECTED');
+    expect(g.geometry).not.toBe('LINE_ACCEPTED');
     expect(g.finish(true).stroke.shape).toBeUndefined();
   });
   it('ignores repeated 1–2px endpoint jitter without polluting path geometry', () => {
@@ -63,13 +65,33 @@ describe('contact-only hold (monotonic fake time)', () => {
     vi.advanceTimersByTime(100); expect(g.preview.shape).toBe('line');
     expect(g.finish(true).original!.points.length).toBeGreaterThan(11);
   });
-  it('resets for 10px motion and for cumulative sub-3px movement', () => {
+  it('does not restart the hold for 2px tremor around an endpoint near the old 3px anchor boundary', () => {
+    vi.useFakeTimers();
+    const g = gesture([...wavy.slice(0, -1), point(98), point(100)]);
+    for (let i = 0; i < 9; i++) {
+      vi.advanceTimersByTime(100);
+      g.append({ ...point(i % 2 ? 98 : 102), pressure: i % 2 ? .2 : .8 });
+    }
+    vi.advanceTimersByTime(99); expect(g.preview.shape).toBeUndefined();
+    vi.advanceTimersByTime(1); expect(g.preview.shape).toBe('line');
+    g.finish(true);
+  });
+  it('keeps the full stability disk but restarts for cumulative motion outside it', () => {
+    vi.useFakeTimers(); const g = gesture();
+    for (let i = 1; i <= 4; i++) { vi.advanceTimersByTime(200); g.append(point(100 + i * 2)); }
+    vi.advanceTimersByTime(200); expect(g.preview.shape).toBe('line'); g.finish(true);
+    const slow = gesture();
+    for (let i = 1; i <= 5; i++) { vi.advanceTimersByTime(150); slow.append(point(100 + i * 2)); }
+    vi.advanceTimersByTime(999); expect(slow.preview.shape).toBeUndefined();
+    vi.advanceTimersByTime(1); expect(slow.preview.shape).toBe('line'); slow.finish(true);
+  });
+  it('resets for 10px motion and for cumulative movement outside 8px', () => {
     vi.useFakeTimers(); const g = gesture(); vi.advanceTimersByTime(900); g.append(point(110));
     vi.advanceTimersByTime(999); expect(g.preview.shape).toBeUndefined();
     vi.advanceTimersByTime(1); expect(g.preview.shape).toBe('line'); g.finish(true);
-    const slow = gesture(); vi.advanceTimersByTime(400); slow.append(point(101));
-    vi.advanceTimersByTime(400); slow.append(point(102));
-    vi.advanceTimersByTime(100); slow.append(point(103));
+    const slow = gesture(); vi.advanceTimersByTime(400); slow.append(point(103));
+    vi.advanceTimersByTime(400); slow.append(point(106));
+    vi.advanceTimersByTime(100); slow.append(point(109));
     vi.advanceTimersByTime(999); expect(slow.preview.shape).toBeUndefined();
     vi.advanceTimersByTime(1); expect(slow.preview.shape).toBe('line'); slow.finish(true);
   });
@@ -91,5 +113,15 @@ describe('contact-only hold (monotonic fake time)', () => {
     expect(small.finish(true).stroke.shape).toBeUndefined();
     expect(large.finish(true).stroke.points).toEqual([point(0), point(100)]);
     expect(large.preview.shape).toBe('line');
+  });
+  it('measures the stability radius in CSS pixels even on a scaled surface', () => {
+    vi.useFakeTimers(); const g = gesture(wavy, 2);
+    vi.advanceTimersByTime(500); g.append(point(104)); // 8 CSS pixels: stable.
+    vi.advanceTimersByTime(500); expect(g.preview.shape).toBe('line'); g.finish(true);
+    const moving = gesture(wavy, 2);
+    vi.advanceTimersByTime(500); moving.append(point(104.5)); // 9 CSS pixels: restart.
+    expect(moving.result).toBe('HOLD_UNSTABLE');
+    vi.advanceTimersByTime(999); expect(moving.preview.shape).toBeUndefined();
+    vi.advanceTimersByTime(1); expect(moving.result).toBe('HOLD_REACHED_LINE_ACCEPTED'); moving.finish(true);
   });
 });
