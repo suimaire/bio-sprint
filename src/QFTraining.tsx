@@ -25,7 +25,7 @@ export function QFSetup({ data, onSave, busy }: { data: StudyData; onSave: Save;
       <p className="small qf-preserve">{p.run_id}</p><p>{p.questions.length}문항 · {Object.entries(p.format_counts).map(([k,v]) => k + ' ' + v).join(' · ')}</p>
       {p.preset === 'daily15' ? <><p>제출 또는 30분 종료 후 정답·해설·채점 기준과 영어 검토를 확인합니다.</p><button className="button primary large" disabled={busy || !!active} onClick={() => void start(p.run_id)}>DAILY-15 시작 · 30분</button></> : <p className="alert">{p.preset === 'standard50' ? 'STANDARD-50은 QF 권장 시간 수정 전까지 실행하지 않습니다. 원본 패키지는 보관됩니다.' : '이번 단계에서는 DAILY-15만 실행합니다. 원본 패키지는 보관됩니다.'}</p>}
     </section>)}
-    {!data.qfPackages?.length && <p className="empty">QF export JSON을 선택하면 세트가 여기에 표시됩니다.</p>}
+    {!data.qfPackages?.length && <p className="empty">Mac mini에서 불러오거나 QF JSON을 가져오면 저장된 세트가 여기에 표시됩니다.</p>}
     {error && <p className="alert" role="alert">{error}</p>}
   </>;
 }

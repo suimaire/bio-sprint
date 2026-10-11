@@ -43,3 +43,10 @@
 .qf-stats { flex-wrap:wrap; }
 .qf-run-id { overflow-wrap:anywhere; min-width:0; }
 @media(max-width:1000px) { .qf-player .exam-layout { display:flex; flex-direction:column; } .qf-player .exam-navigator { width:100%; position:static; } }
+/* READY delivery: settings stay on this device; the list fits narrow tablets. */
+.qf-connection { margin-bottom: 20px; }
+.qf-server-label { display: grid; gap: 8px; margin: 16px 0; }
+.qf-server-label input { width: 100%; min-width: 0; padding: 12px; border: 1px solid #c8d5cf; border-radius: 8px; font: inherit; }
+.qf-connection-state { font-weight: 600; }
+.qf-ready-list { list-style: none; margin: 16px 0 0; padding: 0; }
+.qf-ready-list li { padding: 16px 0; border-top: 1px solid #dce5df; overflow-wrap: anywhere; }
