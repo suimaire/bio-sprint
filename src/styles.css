@@ -27,7 +27,11 @@
 .qf-statements>div { display:flex; gap:16px; margin:14px 0; line-height:1.8; }
 .qf-statements dt { font-weight:700; }
 .qf-statements dd { margin:0; }
-.qf-confidence { border:0; padding:12px 0; margin:16px 0; }
+.qf-confidence { border:0; padding:12px 0; margin:16px 0; min-inline-size:0; }
+.qf-confidence-actions { display:flex; align-items:center; flex-wrap:wrap; gap:16px; }
+.qf-confidence .confidence-row { flex-wrap:wrap; }
+.qf-confidence .confidence { min-height:44px; flex-shrink:0; }
+.qf-shortcut-hint { margin-top:10px; }
 .qf-player .exam-toolbar { flex-wrap:wrap; }
 .qf-movement { flex-basis:100%; flex-wrap:wrap; gap:8px; padding:8px 0 0; border-top:1px solid #e1e6e7; }
 .qf-rubric-check { display:flex; align-items:center; gap:12px; }

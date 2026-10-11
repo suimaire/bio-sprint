@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { type StudyData } from './model';
 import { hasQFAnswer, isChoice, type QFQuestion, type QFSession } from './qfModel';
 import { actQF, startQF, type QFAction } from './qfEngine';
@@ -96,6 +96,47 @@ export function QFPlayer({ data, session, onSave, busy, recoveryRef }: { data: S
   }, []);
   useEffect(() => { if (!remaining && s.status === 'ACTIVE' && !failed.current) dispatch({ type: 'expire' }); });
   const navigate = (index: number) => { setConfirmEnd(false); dispatch({ type: 'navigate', index }); };
+  const onShortcut = useEffectEvent((event: KeyboardEvent) => {
+    if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey || confirmEnd || locked) return;
+    const editing = (target: EventTarget | null) => target instanceof HTMLElement &&
+      (target.isContentEditable || !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
+    if (editing(event.target) || editing(document.activeElement)) return;
+
+    // dispatch updates this buffer synchronously, even before React renders or saves.
+    const current = working.current.qfSessions?.find(item => item.id === session.id);
+    if (failed.current || !current || current.status !== 'ACTIVE' || Math.max(Date.now(), current.lastEventAt) >= current.startedAt + current.timeLimitSec * 1000) return;
+    const pack = working.current.qfPackages?.find(item => item.run_id === current.runId);
+    if (pack?.preset !== 'daily15') return;
+    const question = pack.questions.find(item => item.id === current.questionIds[current.cursor])?.question;
+    const key = event.key.toUpperCase();
+    if (/^[A-E]$/.test(key) && question && isChoice(question) && Object.hasOwn(question.options!, key)) {
+      event.preventDefault();
+      dispatch({ type: 'choice', value: key });
+    } else if (/^[1-5]$/.test(event.key)) {
+      // KeyboardEvent.key covers both the number row and the numeric keypad.
+      event.preventDefault();
+      dispatch({ type: 'confidence', value: Number(event.key) as 1 | 2 | 3 | 4 | 5 });
+    } else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      const index = current.cursor + (event.key === 'ArrowLeft' ? -1 : 1);
+      if (index < 0 || index >= current.questionIds.length) return;
+      event.preventDefault();
+      navigate(index);
+    }
+  });
+  useEffect(() => {
+    let composing = false;
+    const startComposition = () => { composing = true; };
+    const endComposition = () => { composing = false; };
+    const keydown = (event: KeyboardEvent) => { if (!composing) onShortcut(event); };
+    window.addEventListener('keydown', keydown);
+    window.addEventListener('compositionstart', startComposition);
+    window.addEventListener('compositionend', endComposition);
+    return () => {
+      window.removeEventListener('keydown', keydown);
+      window.removeEventListener('compositionstart', startComposition);
+      window.removeEventListener('compositionend', endComposition);
+    };
+  }, []);
   return <div className="exam-player qf-player">
     <header className="exam-toolbar"><div><span className="eyebrow">QUESTION FACTORY · DAILY-15</span><h1>세트 훈련 <span>{s.cursor + 1} / 15</span></h1><span className="small muted" role="status">{pending ? '답안 저장 중…' : '답안 저장됨'} · 답변 {rows.filter(hasQFAnswer).length}/15</span></div><div className={`session-countdown ${remaining < 60000 ? 'urgent' : ''}`}><span>남은 시간</span><strong role="timer" aria-label="DAILY-15 남은 시간">{clockText(remaining)}</strong></div>
       <div className="qf-movement button-row"><button className="button secondary" disabled={locked || s.cursor === 0} onClick={() => navigate(s.cursor - 1)}>이전 문항</button><button className="button primary" disabled={locked || s.cursor === 14} onClick={() => navigate(s.cursor + 1)}>다음 문항</button><button className="button secondary" disabled={locked} onClick={() => dispatch({ type: 'triage', value: 'LATER' })}>Later · 나중에</button><button className="button secondary" disabled={locked} onClick={() => dispatch({ type: 'triage', value: 'SKIP' })}>Skip · 건너뛰기</button></div>
@@ -105,7 +146,13 @@ export function QFPlayer({ data, session, onSave, busy, recoveryRef }: { data: S
       <p className="small muted">Later/Skip은 답안을 유지하고 다음 문항으로 이동합니다.{r.triage && <> 현재 표시: {r.triage === 'LATER' ? 'Later' : 'Skip'} <button className="text-button" disabled={locked} onClick={() => dispatch({ type: 'triage', value: null })}>표시 해제</button></>}</p>
       {isChoice(q) ? <div className="choices" role="group" aria-labelledby="qf-question-heading">{Object.entries(q.options!).map(([key, value]) => <button key={key} data-choice="true" className={`choice ${r.selectedOption === key ? 'selected' : ''}`} disabled={locked} aria-pressed={r.selectedOption === key} onClick={() => dispatch({ type: 'choice', value: key })}><span className="choice-number">{key}</span><span>{Array.isArray(value) ? value.join(', ') : value}</span></button>)}<button className="text-button" disabled={locked || r.selectedOption === null} onClick={() => dispatch({ type: 'choice', value: null })}>답안 지우기</button></div> :
         <label className="qf-answer-label">{q.format === 'SHORT' ? '단답형 답안' : '서술형 답안'}<textarea key={qid} aria-label={q.format === 'SHORT' ? '단답형 답안' : '서술형 답안'} rows={q.format === 'SHORT' ? 3 : 8} value={r.textAnswer} maxLength={100000} disabled={locked} onChange={e => dispatch({ type: 'text', value: e.target.value })}/><span className="small muted">입력 즉시 자동 저장됩니다. 세트 제출 전까지 수정할 수 있습니다.</span></label>}
-      <fieldset className="qf-confidence"><legend>확신도</legend><div className="confidence-row"><span className="small muted">낮음</span>{([1,2,3,4,5] as const).map(n => <button key={n} className={`confidence ${r.confidence === n ? 'selected' : ''}`} aria-label={'확신도 ' + n} aria-pressed={r.confidence === n} disabled={locked} onClick={() => dispatch({ type: 'confidence', value: n })}>{n}</button>)}<span className="small muted">높음</span></div></fieldset>
+      <fieldset className="qf-confidence"><legend>확신도</legend>
+        <div className="qf-confidence-actions">
+          <div className="confidence-row"><span className="small muted">낮음</span>{([1,2,3,4,5] as const).map(n => <button key={n} className={`confidence ${r.confidence === n ? 'selected' : ''}`} aria-label={'확신도 ' + n} aria-pressed={r.confidence === n} disabled={locked} onClick={() => dispatch({ type: 'confidence', value: n })}>{n}</button>)}<span className="small muted">높음</span></div>
+          <button className="button primary" disabled={locked || s.cursor === s.questionIds.length - 1} onClick={() => navigate(s.cursor + 1)}>다음 문항 →</button>
+        </div>
+        <p className="small muted qf-shortcut-hint">단축키: A–E 선지 · 1–5 확신도 · ←/→ 문항 이동</p>
+      </fieldset>
     </section><nav className="exam-navigator" aria-label="QF 문항 탐색"><h2>문항 탐색</h2><p className="small muted">✓ 답변 · — 미응답 · ○ 미방문<br/>L Later · S Skip</p><div className="exam-grid">{s.questionIds.map((id, i) => { const row = rows.find(r => r.questionId === id)!; return <button key={id} className={`exam-number ${hasQFAnswer(row) ? 'answered' : ''}`} aria-label={String(i + 1) + '번 문항'} aria-current={i === s.cursor ? 'step' : undefined} disabled={locked} onClick={() => navigate(i)}><strong>{i + 1}</strong><small>{hasQFAnswer(row) ? '✓' : row.shownAt === null ? '○' : '—'}{row.triage === 'LATER' ? ' L' : row.triage === 'SKIP' ? ' S' : ''}</small></button>; })}</div></nav></div>
     {error && <div className="alert" role="alert">{error}{failed.current && <div className="button-row"><button className="button secondary" disabled={busy} onClick={retry}>저장 재시도</button><button className="button secondary" onClick={() => downloadJSON(working.current, 'bio-sprint-qf-recovery.json')}>임시 기록 내보내기</button></div>}</div>}
     <div className="end-session">{confirmEnd ? <div className="end-confirm"><p>답변 {rows.filter(hasQFAnswer).length}/15문항. 제출하면 답안이 확정되고 결과가 공개됩니다.</p><div className="button-row"><button className="button secondary" disabled={locked} onClick={() => setConfirmEnd(false)}>계속 풀기</button><button className="button danger" disabled={locked || pending || busy} onClick={() => dispatch({ type: 'finish' })}>세트 제출하고 결과 보기</button></div></div> : <button className="button secondary" disabled={locked || pending || busy} onClick={() => setConfirmEnd(true)}>세트 제출</button>}</div>
