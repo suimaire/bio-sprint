@@ -8,7 +8,8 @@ import { QuestionBank } from './QuestionBank';
 import { Training } from './Training';
 import { ExamPlayer } from './Exam';
 import { ExamReport } from './ExamReport';
-import { downloadJSON, loadData, readRawData, saveData, type Snapshot } from './storage';
+import { beginQFCancellation, downloadJSON, loadData, readRawData, saveData, type Snapshot } from './storage';
+import { QFCancellationRecoveryError, recoverQFCancellations } from './qfCancellation';
 import { type StudyData } from './model';
 import { go, Icon, Link, routePath } from './ui';
 
@@ -19,34 +20,55 @@ export default function App() {
   const [fatal, setFatal] = useState(false);
   const [busy, setBusy] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [cancellationFailure, setCancellationFailure] = useState(false);
   const [qfRecovery, setQFRecovery] = useState<StudyData[]>([]);
   const qfRecoveryRef = useRef<(() => StudyData | null) | null>(null);
   const saving = useRef(false);
   const current = useRef<Snapshot | null>(null);
   const changes = useRef<BroadcastChannel | null>(null);
+  const cancellingId = useRef<string | null>(null);
+  function clearCancelledRecovery(value: Snapshot) {
+    const ids = new Set(value.qfCancellations?.map(m => m.sessionId));
+    if (!ids.size) return;
+    setQFRecovery(previous => previous.filter(d => !d.qfSessions?.some(s => s.status !== 'COMPLETED' && ids.has(s.id))).map(d => ({ ...d, qfSessions: d.qfSessions?.filter(s => !ids.has(s.id)), qfResponses: d.qfResponses?.filter(r => !ids.has(r.sessionId)) })));
+  }
+  async function recoveredData() {
+    const value = await loadData();
+    clearCancelledRecovery(value);
+    try {
+      const recovered = await recoverQFCancellations(value);
+      if (value.qfCancellations?.some(m => m.pending)) go('/question-factory');
+      return recovered;
+    } catch (e) { setCancellationFailure(true); throw new QFCancellationRecoveryError('훈련 취소 삭제를 완료하지 못했습니다. 취소 삭제 재시도를 눌러 주세요. ' + (e as Error).message); }
+  }
   useEffect(() => {
     let cancelled = false;
     let refreshing = 0;
-    loadData().then(value => { if (!cancelled) { current.current = value; setSnapshot(value); } }).catch(e => { if (!cancelled) { setError((e as Error).message); setFatal(true); } });
+    recoveredData().then(value => { if (!cancelled) {
+      current.current = value; setSnapshot(value);
+      if (value.qfCancellations?.some(m => routePath() === '/qf-session/' + encodeURIComponent(m.sessionId))) go('/question-factory');
+    } }).catch(e => { if (!cancelled) { setError((e as Error).message); setFatal(true); } });
     const onRoute = () => setPath(routePath());
     async function refresh() {
-      if (cancelled) return;
+      if (cancelled || cancellingId.current) return;
       refreshing++; setSyncing(true);
       try {
-        const value = await loadData();
+        const value = await recoveredData();
         if (cancelled) return;
         if (value.revision > (current.current?.revision ?? -1)) {
-          const priorQF = current.current?.data.qfSessions?.find(s => s.status === 'ACTIVE');
+          const priorQF = current.current?.data.qfSessions?.find(s => s.status !== 'COMPLETED');
           const priorExam = current.current?.data.sessions.find(s => s.mode === 'REAL_EXAM' && s.status === 'ACTIVE');
           // Capture the local buffer BEFORE external completion unmounts its
           // player. A failed write must remain recoverable after tab sync.
           const pendingQF = qfRecoveryRef.current?.();
-          if (pendingQF && priorQF && !value.data.qfSessions?.some(s => s.id === priorQF.id && s.status === 'ACTIVE')) setQFRecovery(previous => [...previous, pendingQF]);
+          const wasCancelled = priorQF && value.qfCancellations?.some(m => m.sessionId === priorQF.id);
+          if (pendingQF && priorQF && !wasCancelled && value.data.qfSessions?.some(s => s.id === priorQF.id && s.status === 'COMPLETED')) setQFRecovery(previous => [...previous, pendingQF]);
           current.current = value; setSnapshot(value);
+          if (wasCancelled) { setError(''); go('/question-factory'); }
           if (priorQF && value.data.qfSessions?.some(s => s.id === priorQF.id && s.status === 'COMPLETED')) go('/qf-session/' + encodeURIComponent(priorQF.id));
           if (priorExam && value.data.sessions.some(s => s.id === priorExam.id && s.status === 'COMPLETED')) go(`/session/${encodeURIComponent(priorExam.id)}`);
         }
-      } catch (e) { if (!cancelled) setError(`최신 기록 확인 실패: ${(e as Error).message}`); }
+      } catch (e) { if (!cancelled) { setError(`최신 기록 확인 실패: ${(e as Error).message}`); if (e instanceof QFCancellationRecoveryError) { setSnapshot(null); setFatal(true); } } }
       finally { refreshing--; if (!cancelled && refreshing === 0) setSyncing(false); }
     }
     const onFocus = () => { void refresh(); };
@@ -66,7 +88,7 @@ export default function App() {
     return () => window.removeEventListener('beforeunload', warn);
   }, [qfRecovery]);
   async function save(data: StudyData, expectedData = snapshot?.data) {
-    if (!current.current || saving.current) return false;
+    if (!current.current || saving.current || cancellingId.current) return false;
     if (expectedData !== current.current.data) {
       setError('다른 탭에서 데이터가 변경되었습니다. 오래된 변경으로 덮어쓰지 않았습니다. 임시 기록이 있다면 내보낸 뒤 최신 기록에서 계속하세요.');
       return false;
@@ -78,10 +100,23 @@ export default function App() {
     } catch (e) { setError((e as Error).message); return false; }
     finally { saving.current = false; setBusy(false); }
   }
+  async function cancelQF(id: string, expectedData: StudyData) {
+    if (!current.current || saving.current) throw new Error('진행 중인 저장이 끝난 뒤 취소 삭제를 재시도해 주세요.');
+    if (!cancellingId.current && expectedData !== current.current.data) throw new Error('최신 기록을 다시 불러온 뒤 훈련 취소를 실행해 주세요. 다른 탭의 변경을 덮어쓰지 않았습니다.');
+    cancellingId.current = id; saving.current = true; setBusy(true); setError('');
+    try {
+      const marked = await beginQFCancellation(id, current.current.revision);
+      changes.current?.postMessage(marked.revision);
+      clearCancelledRecovery(marked);
+      const value = await recoverQFCancellations(marked);
+      current.current = value; setSnapshot(value); changes.current?.postMessage(value.revision);
+      cancellingId.current = null; go('/question-factory');
+    } finally { saving.current = false; setBusy(false); }
+  }
   const nav = [ ['/', '대시보드', 'grid'], ['/training', '집중 훈련', 'timer'], ['/question-factory', 'DAILY-15 · QF', 'bank'], ['/review', '우선순위 복습', 'review'], ['/question-bank', '문제 은행', 'bank'], ['/analytics', '누적 분석', 'grid'] ] as const;
   const data = snapshot?.data;
   const activeExam = data?.sessions.find(s => s.mode === 'REAL_EXAM' && s.status === 'ACTIVE');
-  const activeQF = data?.qfSessions?.find(s => s.status === 'ACTIVE');
+  const activeQF = data?.qfSessions?.find(s => s.status !== 'COMPLETED');
   const focused = activeExam || activeQF;
   const pathname = path.split('?')[0];
   let routeSessionId = pathname.slice('/session/'.length);
@@ -92,11 +127,11 @@ export default function App() {
   const qfReport = data?.qfSessions?.find(s => s.id === qfSessionId);
   return <><a className="skip-link" href="#main" onClick={e => { e.preventDefault(); document.getElementById("main")?.focus(); document.getElementById("main")?.scrollIntoView(); }}>본문으로 건너뛰기</a>{!focused && <aside className="sidebar"><Link href="/" className="brand"><span className="brand-icon"><Icon name="leaf"/></span><span>BIO SPRINT<small>생물학 실전 트레이닝</small></span></Link><span className="sidebar-label">WORKSPACE</span><nav aria-label="주 메뉴">{nav.map(([href, label, icon]) => <Link key={href} href={href} className={`nav-link ${pathname === href ? 'active' : ''}`}><Icon name={icon}/><span>{label}</span>{href === '/training' && data?.sessions.some(s => s.status === 'ACTIVE') && <span className="active-dot" aria-label="진행 중"/>}</Link>)}</nav><div className="sidebar-bottom"><span className="local-label"><span/>LOCAL ONLY</span><p>빠르게 회상하고,<br/>정확하게 판단하세요.</p><small>v0.2 · 2026.11.14 시험</small></div></aside>}
     <div className={`workspace ${focused ? 'exam-workspace' : ''}`}><div className="topbar"><span>나의 학습 공간 <span className="slash">/</span> {activeQF ? 'DAILY-15' : activeExam ? 'REAL EXAM' : nav.find(n => n[0] === pathname)?.[1] ?? '훈련 결과'}</span><span className="save-indicator">{busy ? '저장 중…' : error ? '저장 상태 확인 필요' : syncing ? '최신 기록 확인 중…' : snapshot ? '● 이 기기에 저장됨' : '저장소 확인 중'}</span></div><main id="main" tabIndex={-1}>
-      {error && <div className="storage-error"><pre role="alert" className="alert">{error}</pre><div className="button-row">{!focused && <button className="button secondary" onClick={() => location.reload()}>새로고침</button>}{fatal && <button className="button secondary" onClick={() => void readRawData().then(raw => downloadJSON(raw, 'bio-sprint-recovery.json')).catch(e => setError((e as Error).message))}>원본 데이터 내보내기</button>}</div>{fatal && <p className="small">기존 데이터는 초기화하지 않았습니다. 원본을 백업한 후 저장소 문제를 확인하세요.</p>}</div>}
+      {error && <div className="storage-error"><pre role="alert" className="alert">{error}</pre><div className="button-row">{!focused && <button className="button secondary" onClick={() => location.reload()}>{cancellationFailure ? '취소 삭제 재시도' : '새로고침'}</button>}{fatal && <button className="button secondary" onClick={() => void readRawData().then(raw => downloadJSON(raw, 'bio-sprint-recovery.json')).catch(e => setError((e as Error).message))}>원본 데이터 내보내기</button>}</div>{fatal && <p className="small">기존 데이터는 초기화하지 않았습니다. 원본을 백업한 후 저장소 문제를 확인하세요.</p>}</div>}
       <InkRecovery/>
       {!data && !fatal && <p className="empty">학습 기록을 불러오는 중입니다…</p>}
       {qfRecovery.map((recovery, i) => <section className="alert" role="alert" key={i}><strong>복구용 임시 기록 {i + 1}</strong><p>다른 탭에서 훈련이 종료되었습니다. 이 탭의 저장되지 않은 답안은 임시 보관 중입니다. 새로고침하거나 창을 닫기 전에 내보내세요. 저장된 최종 기록은 덮어쓰지 않았습니다.</p><button className="button secondary" onClick={() => downloadJSON(recovery, 'bio-sprint-qf-recovery-' + (i + 1) + '.json')}>임시 기록 내보내기</button></section>)}
-      {data && (activeQF ? <QFPlayer key={activeQF.id} data={data} session={activeQF} onSave={save} busy={busy || syncing} recoveryRef={qfRecoveryRef}/> : activeExam ? <ExamPlayer key={activeExam.id} data={data} session={activeExam} onSave={save} busy={busy || syncing}/> : pathname === '/' ? <Dashboard data={data} onSave={save} busy={busy || syncing}/> : pathname === '/question-factory' ? <QFSetup data={data} onSave={save} busy={busy || syncing}/> : pathname.startsWith('/qf-session/') ? (qfReport ? <QFReport key={qfReport.id} data={data} session={qfReport} onSave={save} busy={busy || syncing}/> : <p>QF 풀이 기록을 찾을 수 없습니다.</p>) : pathname === '/training' ? <Training key={path} data={data} onSave={save} busy={busy || syncing}/> : pathname === '/question-bank' ? <QuestionBank data={data} onSave={save} busy={busy || syncing}/> : pathname === '/review' ? <><header className="page-heading"><div><span className="eyebrow">REVIEW QUEUE</span><h1>우선순위 복습</h1><p>최근 실수와 풀이 시간을 다음 훈련으로 연결합니다.</p></div></header><ReviewList data={data} full/></> : pathname === '/analytics' ? <Analytics data={data}/> : pathname.startsWith('/session/') ? <>{reportSession ? <ExamReport data={data} session={reportSession} onSave={save} busy={busy || syncing}/> : <Analytics data={data} sessionId={routeSessionId}/>}</> : <><h1>페이지를 찾을 수 없습니다</h1><Link href="/">대시보드로 이동</Link></>)}
+      {data && (activeQF ? <QFPlayer key={activeQF.id} data={data} session={activeQF} onSave={save} onCancel={cancelQF} busy={busy || syncing} recoveryRef={qfRecoveryRef}/> : activeExam ? <ExamPlayer key={activeExam.id} data={data} session={activeExam} onSave={save} busy={busy || syncing}/> : pathname === '/' ? <Dashboard data={data} onSave={save} busy={busy || syncing}/> : pathname === '/question-factory' ? <QFSetup data={data} onSave={save} busy={busy || syncing}/> : pathname.startsWith('/qf-session/') ? (qfReport ? <QFReport key={qfReport.id} data={data} session={qfReport} onSave={save} busy={busy || syncing}/> : <p>QF 풀이 기록을 찾을 수 없습니다.</p>) : pathname === '/training' ? <Training key={path} data={data} onSave={save} busy={busy || syncing}/> : pathname === '/question-bank' ? <QuestionBank data={data} onSave={save} busy={busy || syncing}/> : pathname === '/review' ? <><header className="page-heading"><div><span className="eyebrow">REVIEW QUEUE</span><h1>우선순위 복습</h1><p>최근 실수와 풀이 시간을 다음 훈련으로 연결합니다.</p></div></header><ReviewList data={data} full/></> : pathname === '/analytics' ? <Analytics data={data}/> : pathname.startsWith('/session/') ? <>{reportSession ? <ExamReport data={data} session={reportSession} onSave={save} busy={busy || syncing}/> : <Analytics data={data} sessionId={routeSessionId}/>}</> : <><h1>페이지를 찾을 수 없습니다</h1><Link href="/">대시보드로 이동</Link></>)}
       <footer className="page-footer"><span>BIO SPRINT</span><span>더 많은 정답, 더 나은 시간 판단.</span><span>PERSONAL STUDY TOOL · v0.2</span></footer>
     </main></div></>;
 }

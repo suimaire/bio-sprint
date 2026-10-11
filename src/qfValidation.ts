@@ -18,9 +18,12 @@ export function validateQFData(value: Record<string, unknown>) {
     requireQF(objectQF(s) && id(s.id) && !ids.has(s.id) && !legacy.some(old => old.id === s.id), '세션 ID 누락/중복'); ids.add(s.id);
     const p = packages.find(p => p.run_id === s.runId);
     requireQF(p?.preset === 'daily15' && canonicalQF(s.questionIds) === canonicalQF(p.question_ids) && s.timeLimitSec === 1800, 'DAILY-15 세션의 run/순서/시간 불일치');
-    requireQF(integer(s.cursor, 0, 14) && integer(s.startedAt, 0, 8640000000000000 - 1800000) && integer(s.lastEventAt, s.startedAt, s.startedAt + 1800000), '세션 위치/시각 오류');
-    if (s.status === 'ACTIVE') { active++; requireQF(s.endedAt === null && s.endReason === undefined, '진행 중인 세션에 결과가 있습니다.'); }
-    else requireQF(s.status === 'COMPLETED' && integer(s.endedAt, s.startedAt, s.startedAt + 1800000) && s.lastEventAt === s.endedAt && ['SUBMITTED','EXPIRED'].includes(s.endReason ?? '') && (s.endReason !== 'EXPIRED' || s.endedAt === s.startedAt + 1800000), '종료 시각/사유 오류');
+    const paused = s.pausedDurationMs ?? 0, deadline = s.startedAt + 1800000 + paused;
+    requireQF((s.pausedDurationMs === undefined || integer(s.pausedDurationMs)) && integer(deadline, 0, 8640000000000000) && paused <= s.lastEventAt - s.startedAt, '누적 일시정지 시간 오류');
+    requireQF(integer(s.cursor, 0, 14) && integer(s.startedAt, 0, 8640000000000000 - 1800000) && integer(s.lastEventAt, s.startedAt, deadline), '세션 위치/시각 오류');
+    requireQF(s.status === 'PAUSED' ? integer(s.pausedAt, s.startedAt, deadline - 1) && s.pausedAt === s.lastEventAt && s.pausedDurationMs !== undefined : s.pausedAt === undefined || s.pausedAt === null, '일시정지 시작 시각 오류');
+    if (s.status === 'ACTIVE' || s.status === 'PAUSED') { active++; requireQF(s.endedAt === null && s.endReason === undefined, '진행 중인 세션에 결과가 있습니다.'); }
+    else requireQF(s.status === 'COMPLETED' && integer(s.endedAt, s.startedAt, deadline) && s.lastEventAt === s.endedAt && ['SUBMITTED','EXPIRED'].includes(s.endReason ?? '') && (s.endReason !== 'EXPIRED' || s.endedAt === deadline), '종료 시각/사유 오류');
   }
   requireQF(active <= 1, '기존 훈련과 QF 훈련은 동시에 진행할 수 없습니다.');
   for (const r of responses) {
@@ -46,9 +49,9 @@ export function validateQFData(value: Record<string, unknown>) {
     requireQF(r.answeredAt === null || hasQFAnswer(r) && r.firstAnsweredAt !== null && r.answeredAt >= r.firstAnsweredAt && r.finalResponseAt !== null && r.finalResponseAt >= r.answeredAt, '답안 시각 순서 오류');
     requireQF(r.firstAnsweredAt === null || r.shownAt !== null && r.firstAnsweredAt >= r.shownAt, '최초 답안 시각 오류');
     requireQF(r.answerChangeCount === 0 || r.firstAnsweredAt !== null, '답안 변경 기록 오류');
-    if (s.status === 'ACTIVE') {
+    if (s.status === 'ACTIVE' || s.status === 'PAUSED') {
       requireQF(r.outcome === 'PENDING' && r.correct === null && r.selfGrade === null && r.failureType === null, '풀이 중 채점/정답 공개 불가');
-      requireQF(r.questionId === s.questionIds[s.cursor] ? r.lastShownAt !== null : r.lastShownAt === null, '현재 문항만 타이머를 열 수 있습니다.');
+      requireQF(s.status === 'ACTIVE' && r.questionId === s.questionIds[s.cursor] ? r.lastShownAt !== null : r.lastShownAt === null, '진행 중인 현재 문항만 타이머를 열 수 있습니다.');
     } else {
       requireQF(r.outcome === (hasQFAnswer(r) ? 'ANSWERED' : 'UNANSWERED') && r.lastShownAt === null, '종료 결과 불일치');
       const correct = r.gradingMode === 'AUTO' ? hasQFAnswer(r) ? r.selectedOption === q.correct_answer : null : r.selfGrade === 'CORRECT' ? true : r.selfGrade === 'INCORRECT' ? false : null;
@@ -57,6 +60,6 @@ export function validateQFData(value: Record<string, unknown>) {
   }
   for (const s of sessions) {
     for (const qid of s.questionIds) requireQF(pairs.has(canonicalQF([s.id, qid])), '문항 응답 레코드 누락');
-    requireQF(responses.filter(r => r.sessionId === s.id).reduce((sum, r) => sum + r.responseTimeMs, 0) <= (s.endedAt ?? s.lastEventAt) - s.startedAt, '문항 풀이 시간 합계 오류');
+    requireQF(responses.filter(r => r.sessionId === s.id).reduce((sum, r) => sum + r.responseTimeMs, 0) <= (s.endedAt ?? s.lastEventAt) - s.startedAt - (s.pausedDurationMs ?? 0), '문항 풀이 시간 합계 오류');
   }
 }

@@ -1,16 +1,18 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import { type StudyData } from './model';
 import { hasQFAnswer, isChoice, type QFSession } from './qfModel';
-import { actQF, startQF, type QFAction } from './qfEngine';
+import { actQF, qfRemaining, startQF, type QFAction } from './qfEngine';
 import { clockText, go, Link, type Save } from './ui';
 import { DataTransfer } from './DataTransfer';
 import { downloadJSON } from './storage';
 import { QFInk } from './ink/QFInk';
+import { finishInkGestures } from './ink/gestures';
+import { flushSessionInk } from './ink/store';
 export { QFPrompt } from './QFPrompt';
 
 export function QFSetup({ data, onSave, busy }: { data: StudyData; onSave: Save; busy: boolean }) {
   const [error, setError] = useState('');
-  const active = data.sessions.some(s => s.status === 'ACTIVE') || data.qfSessions?.some(s => s.status === 'ACTIVE');
+  const active = data.sessions.some(s => s.status === 'ACTIVE') || data.qfSessions?.some(s => s.status !== 'COMPLETED');
   async function start(runId: string) {
     try {
       // getRandomValues is also available in iPad HTTP LAN previews.
@@ -31,49 +33,89 @@ export function QFSetup({ data, onSave, busy }: { data: StudyData; onSave: Save;
     {error && <p className="alert" role="alert">{error}</p>}
   </>;
 }
-export function QFPlayer({ data, session, onSave, busy, recoveryRef }: { data: StudyData; session: QFSession; onSave: Save; busy: boolean; recoveryRef: { current: (() => StudyData | null) | null } }) {
+export function QFPlayer({ data, session, onSave, onCancel, busy, recoveryRef }: { data: StudyData; session: QFSession; onSave: Save; onCancel: (id: string, expectedData: StudyData) => Promise<void>; busy: boolean; recoveryRef: { current: (() => StudyData | null) | null } }) {
   const [draft, setDraft] = useState(data);
   const working = useRef(data), saved = useRef(data), saving = useRef(false);
+  const saveTask = useRef<Promise<void> | null>(null), cancelling = useRef(false), changing = useRef(false);
   useEffect(() => {
-    recoveryRef.current = () => working.current === saved.current ? null : working.current;
+    recoveryRef.current = () => cancelling.current || working.current === saved.current ? null : working.current;
     return () => { recoveryRef.current = null; };
   }, [recoveryRef]);
   const saver = useRef(onSave); saver.current = onSave;
   const [pending, setPending] = useState(false), [error, setError] = useState('');
   const failed = useRef(false), [now, setNow] = useState(Date.now());
   const [confirmEnd, setConfirmEnd] = useState(false);
+  const [confirmCancel, setConfirmCancel] = useState(false), [transition, setTransition] = useState(false), [cancelError, setCancelError] = useState(''), [pauseError, setPauseError] = useState('');
+  const dialog = useRef<HTMLDialogElement>(null), resumeButton = useRef<HTMLButtonElement>(null);
   const s = draft.qfSessions!.find(s => s.id === session.id)!;
   const p = draft.qfPackages!.find(p => p.run_id === s.runId)!;
   const qid = s.questionIds[s.cursor], q = p.questions.find(w => w.id === qid)!.question;
   const rows = draft.qfResponses!.filter(r => r.sessionId === s.id), r = rows.find(r => r.questionId === qid)!;
-  const remaining = Math.max(0, s.startedAt + 1800000 - Math.max(now, s.lastEventAt));
-  const locked = failed.current || s.status !== 'ACTIVE' || !remaining;
+  const remaining = qfRemaining(s, now);
+  const locked = failed.current || s.status !== 'ACTIVE' || !remaining || transition || confirmCancel || session.status !== 'ACTIVE';
+  useEffect(() => { if (confirmCancel) dialog.current?.showModal(); else dialog.current?.close(); }, [confirmCancel]);
+  useEffect(() => { if (s.status === 'PAUSED') resumeButton.current?.focus(); }, [s.status]);
   useEffect(() => { document.getElementById('qf-question-heading')?.focus({ preventScroll: true }); window.scrollTo(0, 0); }, [qid]);
   useEffect(() => {
     // Adopt external tab updates only when there are no unsaved local edits.
-    if (!saving.current && working.current === saved.current) { working.current = data; saved.current = data; setDraft(data); }
+    if (!cancelling.current && !saving.current && working.current === saved.current) { working.current = data; saved.current = data; setDraft(data); }
   }, [data]);
-  async function flush() {
-    if (saving.current || failed.current) return;
+  function flush(): Promise<void> {
+    if (saveTask.current) return saveTask.current;
+    saveTask.current = persist().finally(() => { saveTask.current = null; });
+    return saveTask.current;
+  }
+  async function persist() {
+    if (saving.current || failed.current || cancelling.current) return;
     saving.current = true; setPending(true);
     try {
-      while (working.current !== saved.current) {
+      while (working.current !== saved.current && !cancelling.current) {
         const target = working.current, base = saved.current;
         if (!await saver.current(target, base)) throw new Error('저장하지 못했습니다. 현재 입력은 임시 보관 중입니다. 저장 재시도 또는 임시 기록 내보내기를 사용하세요.');
         saved.current = target;
       }
       setError('');
-      if (saved.current.qfSessions!.find(s => s.id === session.id)!.status === 'COMPLETED') go('/qf-session/' + encodeURIComponent(session.id));
+      if (!cancelling.current && saved.current.qfSessions!.find(s => s.id === session.id)?.status === 'COMPLETED') go('/qf-session/' + encodeURIComponent(session.id));
     } catch (e) { failed.current = true; setError((e as Error).message); }
     finally { saving.current = false; setPending(working.current !== saved.current); }
   }
   function dispatch(action: QFAction) {
-    if (failed.current) return;
+    if (failed.current || cancelling.current || changing.current || (session.status === 'PAUSED' && action.type !== 'resume')) return;
     try {
       const next = actQF(working.current, session.id, action, Date.now());
       if (next === working.current) return;
       working.current = next; setDraft(next); void flush();
     } catch (e) { setError((e as Error).message); }
+  }
+  async function pauseTraining() {
+    if (changing.current || cancelling.current) return;
+    finishInkGestures();
+    // Freeze at the button event, even if IndexedDB needs time to flush.
+    dispatch({ type: 'pause' });
+    changing.current = true; setTransition(true); setConfirmEnd(false);
+    try { await Promise.all([flush(), flushSessionInk(session.id)]); setPauseError(''); }
+    catch (e) { setPauseError((e as Error).message); }
+    finally { changing.current = false; setTransition(false); }
+  }
+  async function resumeTraining() {
+    if (changing.current || cancelling.current || failed.current) return;
+    changing.current = true; setTransition(true);
+    try {
+      await flushSessionInk(session.id); setPauseError('');
+      changing.current = false; dispatch({ type: 'resume' }); await flush();
+      document.getElementById('qf-question-heading')?.focus({ preventScroll: true });
+    } catch (e) { setPauseError((e as Error).message); }
+    finally { changing.current = false; setTransition(false); }
+  }
+  async function cancelTraining() {
+    if (transition) return;
+    cancelling.current = true; changing.current = true; setTransition(true); setCancelError('');
+    finishInkGestures();
+    try {
+      await saveTask.current; // Drain the in-flight write; queued edits will be discarded.
+      await onCancel(session.id, saved.current);
+    } catch (e) { setCancelError((e as Error).message); }
+    finally { setTransition(false); }
   }
   function retry() {
     failed.current = false;
@@ -89,17 +131,17 @@ export function QFPlayer({ data, session, onSave, busy, recoveryRef }: { data: S
     window.addEventListener('beforeunload', unloading);
     return () => { clearInterval(timer); window.removeEventListener('focus', wake); document.removeEventListener('visibilitychange', wake); window.removeEventListener('beforeunload', unloading); };
   }, []);
-  useEffect(() => { if (!remaining && s.status === 'ACTIVE' && !failed.current) dispatch({ type: 'expire' }); });
+  useEffect(() => { if (!remaining && s.status === 'ACTIVE' && !failed.current && !cancelling.current && !changing.current) dispatch({ type: 'expire' }); });
   const navigate = (index: number) => { setConfirmEnd(false); dispatch({ type: 'navigate', index }); };
   const onShortcut = useEffectEvent((event: KeyboardEvent) => {
-    if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey || confirmEnd || locked) return;
+    if (event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229 || event.metaKey || event.ctrlKey || event.altKey || confirmEnd || locked || changing.current || cancelling.current) return;
     const editing = (target: EventTarget | null) => target instanceof HTMLElement &&
       (target.isContentEditable || !!target.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])'));
     if (editing(event.target) || editing(document.activeElement)) return;
 
     // dispatch updates this buffer synchronously, even before React renders or saves.
     const current = working.current.qfSessions?.find(item => item.id === session.id);
-    if (failed.current || !current || current.status !== 'ACTIVE' || Math.max(Date.now(), current.lastEventAt) >= current.startedAt + current.timeLimitSec * 1000) return;
+    if (failed.current || !current || current.status !== 'ACTIVE' || !qfRemaining(current, Date.now())) return;
     const pack = working.current.qfPackages?.find(item => item.run_id === current.runId);
     if (pack?.preset !== 'daily15') return;
     const question = pack.questions.find(item => item.id === current.questionIds[current.cursor])?.question;
@@ -134,10 +176,13 @@ export function QFPlayer({ data, session, onSave, busy, recoveryRef }: { data: S
   }, []);
   return <div className="exam-player qf-player">
     <header className="exam-toolbar"><div><span className="eyebrow">QUESTION FACTORY · DAILY-15</span><h1>세트 훈련 <span>{s.cursor + 1} / 15</span></h1><span className="small muted" role="status">{pending ? '답안 저장 중…' : '답안 저장됨'} · 답변 {rows.filter(hasQFAnswer).length}/15</span></div><div className={`session-countdown ${remaining < 60000 ? 'urgent' : ''}`}><span>남은 시간</span><strong role="timer" aria-label="DAILY-15 남은 시간">{clockText(remaining)}</strong></div>
+      {s.status === 'ACTIVE' && <div className="qf-session-actions button-row"><button className="button secondary" disabled={locked} onClick={() => void pauseTraining()}>일시정지</button><button className="button secondary qf-cancel-button" disabled={transition || cancelling.current} onClick={() => { finishInkGestures(); setConfirmEnd(false); setConfirmCancel(true); }}>훈련 취소</button></div>}
       <div className="qf-movement button-row"><button className="button secondary" disabled={locked || s.cursor === 0} onClick={() => navigate(s.cursor - 1)}>이전 문항</button><button className="button primary" disabled={locked || s.cursor === 14} onClick={() => navigate(s.cursor + 1)}>다음 문항</button><button className="button secondary" disabled={locked} onClick={() => dispatch({ type: 'triage', value: 'LATER' })}>Later · 나중에</button><button className="button secondary" disabled={locked} onClick={() => dispatch({ type: 'triage', value: 'SKIP' })}>Skip · 건너뛰기</button></div>
     </header>
-    <div className="exam-layout"><section className="question-stage exam-question" aria-label="QF 풀이 문항">
-      <QFInk key={qid} q={q} scope={{ sessionId: s.id, runId: s.runId, questionId: qid }} readOnly={s.status !== 'ACTIVE' || !remaining}>
+    <div className={`qf-session-content ${s.status === 'PAUSED' ? 'qf-paused' : ''}`}>
+    {s.status === 'PAUSED' && <section className="qf-pause-panel" aria-label="일시정지"><h2>훈련이 일시정지되었습니다.</h2><p>남은 시간: {clockText(remaining)}</p><div className="button-row"><button ref={resumeButton} className="button primary" disabled={transition || pending || busy || failed.current || cancelling.current} onClick={() => void resumeTraining()}>이어서 풀기</button><button className="button secondary qf-cancel-button" disabled={transition || cancelling.current} onClick={() => setConfirmCancel(true)}>훈련 취소</button></div>{pauseError && <p className="alert" role="alert">{pauseError}</p>}</section>}
+    <div className="exam-layout" inert={locked}><section className="question-stage exam-question" aria-label="QF 풀이 문항">
+      <QFInk key={qid} q={q} scope={{ sessionId: s.id, runId: s.runId, questionId: qid }} readOnly={locked}>
       <p className="small muted">Later/Skip은 답안을 유지하고 다음 문항으로 이동합니다.{r.triage && <> 현재 표시: {r.triage === 'LATER' ? 'Later' : 'Skip'} <button className="text-button" disabled={locked} onClick={() => dispatch({ type: 'triage', value: null })}>표시 해제</button></>}</p>
       {isChoice(q) ? <div className="choices" role="group" aria-labelledby="qf-question-heading">{Object.entries(q.options!).map(([key, value]) => <button key={key} data-choice="true" className={`choice ${r.selectedOption === key ? 'selected' : ''}`} disabled={locked} aria-pressed={r.selectedOption === key} onClick={() => dispatch({ type: 'choice', value: key })}><span className="choice-number">{key}</span><span>{Array.isArray(value) ? value.join(', ') : value}</span></button>)}<button className="text-button" disabled={locked || r.selectedOption === null} onClick={() => dispatch({ type: 'choice', value: null })}>답안 지우기</button></div> :
         <label className="qf-answer-label">{q.format === 'SHORT' ? '단답형 답안' : '서술형 답안'}<textarea key={qid} aria-label={q.format === 'SHORT' ? '단답형 답안' : '서술형 답안'} rows={q.format === 'SHORT' ? 3 : 8} value={r.textAnswer} maxLength={100000} disabled={locked} onChange={e => dispatch({ type: 'text', value: e.target.value })}/><span className="small muted">입력 즉시 자동 저장됩니다. 세트 제출 전까지 수정할 수 있습니다.</span></label>}
@@ -150,8 +195,10 @@ export function QFPlayer({ data, session, onSave, busy, recoveryRef }: { data: S
       </fieldset>
       </QFInk>
     </section><nav className="exam-navigator" aria-label="QF 문항 탐색"><h2>문항 탐색</h2><p className="small muted">✓ 답변 · — 미응답 · ○ 미방문<br/>L Later · S Skip</p><div className="exam-grid">{s.questionIds.map((id, i) => { const row = rows.find(r => r.questionId === id)!; return <button key={id} className={`exam-number ${hasQFAnswer(row) ? 'answered' : ''}`} aria-label={String(i + 1) + '번 문항'} aria-current={i === s.cursor ? 'step' : undefined} disabled={locked} onClick={() => navigate(i)}><strong>{i + 1}</strong><small>{hasQFAnswer(row) ? '✓' : row.shownAt === null ? '○' : '—'}{row.triage === 'LATER' ? ' L' : row.triage === 'SKIP' ? ' S' : ''}</small></button>; })}</div></nav></div>
+    </div>
     {error && <div className="alert" role="alert">{error}{failed.current && <div className="button-row"><button className="button secondary" disabled={busy} onClick={retry}>저장 재시도</button><button className="button secondary" onClick={() => downloadJSON(working.current, 'bio-sprint-qf-recovery.json')}>임시 기록 내보내기</button></div>}</div>}
     <div className="end-session">{confirmEnd ? <div className="end-confirm"><p>답변 {rows.filter(hasQFAnswer).length}/15문항. 제출하면 답안이 확정되고 결과가 공개됩니다.</p><div className="button-row"><button className="button secondary" disabled={locked} onClick={() => setConfirmEnd(false)}>계속 풀기</button><button className="button danger" disabled={locked || pending || busy} onClick={() => dispatch({ type: 'finish' })}>세트 제출하고 결과 보기</button></div></div> : <button className="button secondary" disabled={locked || pending || busy} onClick={() => setConfirmEnd(true)}>세트 제출</button>}</div>
-    <p className="small muted">새로고침·다른 탭·기기 잠금 중에도 30분은 계속 경과합니다. 시간이 끝나면 저장된 답안으로 자동 종료됩니다.</p>
+    <p className="small muted">진행 중에는 새로고침·다른 탭·기기 잠금 중에도 시간이 경과합니다. 일시정지 버튼을 누르면 남은 시간이 보존됩니다.</p>
+    <dialog ref={dialog} className="qf-cancel-dialog" aria-labelledby="qf-cancel-heading" onCancel={event => { event.preventDefault(); if (!cancelling.current) setConfirmCancel(false); }}><h2 id="qf-cancel-heading">훈련을 취소하시겠습니까?</h2><p>현재 훈련의 답안, 확신도, 필기,<br/>진행 기록이 모두 삭제됩니다.</p><p>가져온 문제 세트와 이전에 완료한<br/>다른 훈련 기록은 유지됩니다.</p>{cancelError && <p className="alert" role="alert">{cancelError}</p>}<div className="button-row"><button className="button secondary" disabled={cancelling.current} onClick={() => setConfirmCancel(false)}>계속 풀기</button><button className="button danger" disabled={transition} onClick={() => void cancelTraining()}>{transition ? '훈련 삭제 중…' : cancelError ? '취소 삭제 재시도' : '훈련 취소하기'}</button>{cancelError && <button className="button secondary" onClick={() => location.reload()}>최신 기록 다시 불러오기</button>}</div></dialog>
   </div>;
 }

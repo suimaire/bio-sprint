@@ -36,7 +36,9 @@ export interface QFPackage {
 export interface QFSession {
   id: string; runId: string; questionIds: string[]; cursor: number;
   startedAt: number; lastEventAt: number; endedAt: number | null;
-  timeLimitSec: 1800; status: 'ACTIVE' | 'COMPLETED'; endReason?: 'SUBMITTED' | 'EXPIRED';
+  timeLimitSec: 1800; status: 'ACTIVE' | 'PAUSED' | 'COMPLETED'; endReason?: 'SUBMITTED' | 'EXPIRED';
+  // Optional so existing sessions/backups retain their original shape.
+  pausedDurationMs?: number; pausedAt?: number | null;
 }
 export interface QFResponse {
   id: string; sessionId: string; runId: string; questionId: string;

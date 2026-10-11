@@ -117,3 +117,14 @@
 .qf-connection-state { font-weight: 600; }
 .qf-ready-list { list-style: none; margin: 16px 0 0; padding: 0; }
 .qf-ready-list li { padding: 16px 0; border-top: 1px solid #dce5df; overflow-wrap: anywhere; }
+/* DAILY-15 lifecycle controls remain separate from question navigation. */
+.qf-session-actions { flex-wrap: wrap; justify-content: flex-end; }
+.qf-session-actions .button, .qf-pause-panel .button, .qf-cancel-dialog .button { min-height: 44px; min-width: 44px; }
+.qf-cancel-button { color: #76554d; border-color: #d7c9c4; }
+.qf-session-content { position: relative; }
+.qf-paused > .exam-layout { opacity: .16; filter: blur(5px); user-select: none; pointer-events: none; }
+.qf-pause-panel { position: sticky; top: 160px; z-index: 5; margin: 24px auto -220px; min-height: 220px; width: min(520px, 100%); padding: 28px; border: 1px solid #d9e2da; border-radius: 16px; background: #fbfcfa; box-shadow: 0 12px 40px #203c2220; }
+.qf-pause-panel h2 { margin-top: 0; }
+.qf-cancel-dialog { width: min(520px, calc(100vw - 32px)); padding: 28px; border: 1px solid #d9e2da; border-radius: 16px; color: #202923; background: #fbfcfa; }
+.qf-cancel-dialog::backdrop { background: #1c302a66; }
+@media (max-width: 700px) { .qf-session-actions { justify-content: flex-start; } .qf-pause-panel { top: 20px; padding: 20px; } }

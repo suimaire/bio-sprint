@@ -4,6 +4,7 @@ export class InkConflict extends Error {
   constructor() { super('다른 탭에서 이 필기를 변경했습니다. 덮어쓰지 않았습니다. 복구 JSON을 내보낸 뒤 최신 필기를 불러오세요.'); }
 }
 let connection: Promise<IDBDatabase> | undefined;
+const cancellationKey = (sessionId: string) => 'cancelled-session:' + sessionId;
 function database(): Promise<IDBDatabase> {
   if (connection) return connection;
   connection = new Promise((resolve, reject) => {
@@ -36,15 +37,45 @@ export async function saveInk(key: InkKey, document: InkDocument, revision: numb
   return new Promise((resolve, reject) => {
     const tx = db.transaction('surfaces', 'readwrite'), store = tx.objectStore('surfaces');
     const request = store.get(keyId(key));
+    const cancelled = store.get(cancellationKey(key.sessionId));
     const record: InkRecord = { key, document, revision: revision + 1, updatedAt: Date.now() };
     let failure: unknown;
-    request.onsuccess = () => {
+    cancelled.onsuccess = () => {
       try {
+        if (cancelled.result) throw new Error('취소한 훈련의 필기는 저장할 수 없습니다.');
         if ((request.result?.revision ?? 0) !== revision) throw new InkConflict();
         store.put(record, keyId(key));
       } catch (error) { failure = error; tx.abort(); }
     };
     tx.oncomplete = () => resolve(record);
     tx.onabort = tx.onerror = () => reject(failure ?? tx.error ?? new Error('필기 저장에 실패했습니다.'));
+  });
+}
+export async function deleteSessionInk(sessionId: string): Promise<void> {
+  const db = await database();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('surfaces', 'readwrite'), store = tx.objectStore('surfaces');
+    let failure: unknown;
+    // Same store/transaction as saveInk: writes either precede this deletion or
+    // see the tombstone. No late writer can recreate a cancelled surface.
+    store.put(true, cancellationKey(sessionId));
+    const request = store.openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      try {
+        if ((cursor.value as InkRecord)?.key?.sessionId === sessionId) cursor.delete();
+        cursor.continue();
+      } catch (e) { failure = e; try { tx.abort(); } catch { /* Already aborted by the storage failure. */ } }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onabort = tx.onerror = () => reject(failure ?? tx.error ?? new Error('필기 삭제에 실패했습니다. 취소 삭제를 재시도해 주세요.'));
+  });
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction('surfaces'), request = tx.objectStore('surfaces').openCursor();
+    let remains = false;
+    request.onsuccess = () => { const cursor = request.result; if (cursor) { remains ||= cursor.value?.key?.sessionId === sessionId; cursor.continue(); } };
+    tx.oncomplete = () => remains ? reject(new Error('필기 삭제 확인에 실패했습니다.')) : resolve();
+    tx.onabort = tx.onerror = () => reject(tx.error ?? new Error('필기 삭제 확인에 실패했습니다.'));
   });
 }

@@ -2,7 +2,7 @@ import { FAILURES, type StudyData } from './model';
 import { hasQFAnswer, isChoice, SELF_GRADES, type QFResponse, type QFSession, type SelfGrade } from './qfModel';
 
 export function startQF(data: StudyData, runId: string, now: number, id: string): StudyData {
-  if (data.sessions.some(s => s.status === 'ACTIVE') || data.qfSessions?.some(s => s.status === 'ACTIVE')) throw new Error('진행 중인 훈련을 먼저 완료해 주세요.');
+  if (data.sessions.some(s => s.status === 'ACTIVE') || data.qfSessions?.some(s => s.status !== 'COMPLETED')) throw new Error('진행 중인 훈련을 먼저 완료해 주세요.');
   const p = data.qfPackages?.find(p => p.run_id === runId);
   if (!p) throw new Error('QF 패키지를 먼저 가져와 주세요.');
   if (p.preset !== 'daily15') throw new Error(p.preset === 'standard50' ? 'STANDARD-50은 권장 시간 수정 전까지 시작할 수 없습니다.' : '이번 단계에서는 DAILY-15만 시작할 수 있습니다.');
@@ -22,14 +22,24 @@ export function startQF(data: StudyData, runId: string, now: number, id: string)
 }
 function open(r: QFResponse, now: number) { r.shownAt ??= now; r.lastShownAt = now; r.visitCount++; r.revisited = r.visitCount > 1; }
 function close(r: QFResponse, now: number) { if (r.lastShownAt !== null) r.responseTimeMs += Math.max(0, now - r.lastShownAt); r.lastShownAt = null; }
-export type QFAction = { type: 'choice'; value: string | null } | { type: 'text'; value: string } | { type: 'confidence'; value: QFResponse['confidence'] } | { type: 'triage'; value: 'LATER' | 'SKIP' | null } | { type: 'navigate'; index: number } | { type: 'finish' | 'expire' };
+export function qfActiveTime(s: QFSession, now: number): number {
+  const end = s.endedAt ?? (s.status === 'PAUSED' ? s.pausedAt! : Math.max(now, s.lastEventAt));
+  return Math.min(s.timeLimitSec * 1000, Math.max(0, end - s.startedAt - (s.pausedDurationMs ?? 0)));
+}
+export const qfRemaining = (s: QFSession, now: number) => s.timeLimitSec * 1000 - qfActiveTime(s, now);
+export type QFAction = { type: 'choice'; value: string | null } | { type: 'text'; value: string } | { type: 'confidence'; value: QFResponse['confidence'] } | { type: 'triage'; value: 'LATER' | 'SKIP' | null } | { type: 'navigate'; index: number } | { type: 'finish' | 'expire' | 'pause' | 'resume' };
 export function actQF(data: StudyData, sessionId: string, action: QFAction, now: number): StudyData {
   const prior = data.qfSessions?.find(s => s.id === sessionId);
-  if (!prior || prior.status !== 'ACTIVE') { if (prior && action.type === 'expire') return data; throw new Error('이미 종료된 QF 훈련입니다.'); }
+  if (!prior || prior.status === 'COMPLETED') { if (prior && action.type === 'expire') return data; throw new Error('이미 종료된 QF 훈련입니다.'); }
+  if (prior.status === 'PAUSED' && action.type !== 'resume') {
+    if (action.type === 'expire') return data;
+    throw new Error('일시정지한 훈련을 먼저 이어서 풀어 주세요.');
+  }
+  if (prior.status === 'ACTIVE' && action.type === 'resume') throw new Error('이미 진행 중인 훈련입니다.');
   if (!Number.isSafeInteger(now) || now < 0) throw new Error('유효하지 않은 시각입니다.');
-  const deadline = prior.startedAt + prior.timeLimitSec * 1000;
-  const time = Math.min(deadline, Math.max(prior.lastEventAt, now));
-  const expired = time >= deadline;
+  const deadline = prior.startedAt + prior.timeLimitSec * 1000 + (prior.pausedDurationMs ?? 0);
+  const time = action.type === 'resume' ? Math.max(prior.lastEventAt, now) : Math.min(deadline, Math.max(prior.lastEventAt, now));
+  const expired = action.type !== 'resume' && time >= deadline;
   if (action.type === 'expire' && !expired) return data;
   const s = { ...prior, lastEventAt: time };
   const rows = data.qfResponses!.filter(r => r.sessionId === s.id).map(r => ({ ...r }));
@@ -44,6 +54,12 @@ export function actQF(data: StudyData, sessionId: string, action: QFAction, now:
       row.correct = row.gradingMode === 'AUTO' && hasQFAnswer(row) ? row.selectedOption === item.question.correct_answer : null;
     }
     s.status = 'COMPLETED'; s.endedAt = time; s.endReason = expired ? 'EXPIRED' : 'SUBMITTED';
+  } else if (action.type === 'pause') {
+    close(r, time); s.status = 'PAUSED'; s.pausedAt = time; s.pausedDurationMs ??= 0;
+  } else if (action.type === 'resume') {
+    s.pausedDurationMs = (s.pausedDurationMs ?? 0) + time - s.pausedAt!;
+    s.pausedAt = null; s.status = 'ACTIVE';
+    r.lastShownAt = time; // The same visit continues; no answer/visit count changes.
   } else if (action.type === 'navigate') {
     if (!Number.isInteger(action.index) || action.index < 0 || action.index >= s.questionIds.length) throw new Error('문항 번호가 범위를 벗어났습니다.');
     if (action.index === s.cursor) return data;

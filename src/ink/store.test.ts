@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { InkStore } from './store';
+import { discardSessionInk, getInkStore, InkStore } from './store';
+import { registerInkGesture } from './gestures';
 import { inkKey, type InkRecord, type InkStroke } from './model';
 
 // Only persistence is replaced here; history, gesture finalization and the save loop are real.
@@ -21,6 +22,14 @@ const line: InkStroke = { ...original, shape: 'line', points: [original.points[0
 const scope = { sessionId: 'test', runId: 'run', questionId: 'q1' };
 beforeEach(() => { disk.records.clear(); disk.writes.length = 0; });
 describe('atomic corrected stroke history', () => {
+  it('recovering an already discarded session does not finish another session’s live stroke', async () => {
+    const old = getInkStore(inkKey({ ...scope, sessionId: 'cancelled-cache' }, 'stem')); await old.load();
+    await discardSessionInk('cancelled-cache');
+    let finished = false;
+    const unregister = registerInkGesture(() => { finished = true; });
+    try { await discardSessionInk('cancelled-cache'); expect(finished).toBe(false); }
+    finally { unregister(); }
+  });
   it('writes the final document once, but undoes line → freehand → absent and redoes both', async () => {
     const store = new InkStore(inkKey(scope, 'stem')); await store.load();
     store.commitStroke(line, original, 200); await vi.waitFor(() => expect(store.snapshot().status).toBe('saved'));
