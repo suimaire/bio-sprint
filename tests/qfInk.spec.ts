@@ -22,6 +22,21 @@ async function stroke(canvas: Locator, type = 'pen', end = 'pointerup') {
 }
 const note = (page: Page) => page.locator('svg[data-ink-surface="scratchpad"]');
 const stem = (page: Page) => page.locator('svg[data-ink-surface="stem"]');
+const sharedTools = (page: Page) => page.getByRole('toolbar', { name: '공통 필기 도구' });
+
+async function contact(canvas: Locator, phase: 'start' | 'move' | 'pointerup' | 'pointercancel' | 'lostpointercapture', x = 140, y = 40) {
+  await canvas.evaluate((el, { phase, x, y }) => {
+    const matrix = (el as SVGSVGElement).getScreenCTM()!;
+    const send = (name: string, px: number, py: number) => {
+      const p = new DOMPoint(px, py).matrixTransform(matrix);
+      el.dispatchEvent(new PointerEvent(name, { bubbles: true, cancelable: true, pointerId: 51, pointerType: 'pen', clientX: p.x, clientY: p.y, button: 0, buttons: name === 'pointerup' ? 0 : 1, pressure: .6 }));
+    };
+    if (phase === 'start') {
+      send('pointerdown', 40, 40);
+      for (let i = 1; i <= 10; i++) send('pointermove', 40 + i * 10, 40 + (i === 10 ? 0 : i % 2));
+    } else send(phase === 'move' ? 'pointermove' : phase, x, y);
+  }, { phase, x, y });
+}
 async function openNote(page: Page) {
   await page.getByRole('button', { name: '풀이 노트', exact: true }).click();
   await expect(note(page)).toHaveAttribute('data-ready', 'true');
@@ -32,6 +47,162 @@ test.beforeEach(async ({ page }) => {
   await page.getByRole('button', { name: '가져오기 적용' }).click();
   await page.getByRole('button', { name: 'DAILY-15 시작 · 30분' }).click();
   await expect(page.locator('#qf-question-heading')).toHaveText('테스트 문항 1');
+});
+
+test('공통 툴바 하나로 세 표면을 그리고 도구별 색상과 독립 Undo를 유지한다', async ({ page }) => {
+  await page.keyboard.press('ArrowRight'); await openNote(page);
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  const tools = sharedTools(page);
+  await expect(tools).toHaveCount(1);
+  await tools.getByRole('button', { name: '펜', exact: true }).click();
+  await tools.getByRole('button', { name: '파랑', exact: true }).click();
+  await stroke(stem(page));
+  await expect(tools.locator('[data-active-surface]')).toHaveText('본문');
+  const statement = page.locator('svg[data-ink-surface="statement"]');
+  await stroke(statement); await stroke(note(page));
+  for (const canvas of [stem(page), statement, note(page)]) {
+    await expect(canvas.locator('[data-stroke]')).toHaveCount(1);
+    await expect(canvas.locator('[data-stroke]')).toHaveAttribute('fill', '#245FBD');
+  }
+  await tools.getByRole('button', { name: '형광펜', exact: true }).click();
+  await tools.getByRole('button', { name: '색상 및 굵기', exact: true }).click();
+  await tools.getByRole('button', { name: '분홍', exact: true }).click();
+  await stroke(note(page));
+  await expect(note(page).locator('[data-stroke]').last()).toHaveAttribute('stroke', '#FF95B8');
+  await tools.getByRole('button', { name: '펜', exact: true }).click(); await stroke(statement);
+  await expect(statement.locator('[data-stroke]').last()).toHaveAttribute('fill', '#245FBD');
+  await stroke(stem(page), 'touch');
+  await expect(tools.locator('[data-active-surface]')).toHaveText('진술');
+  await tools.getByRole('button', { name: '실행 취소', exact: true }).click();
+  await expect(statement.locator('[data-stroke]')).toHaveCount(1);
+  await expect(note(page).locator('[data-stroke]')).toHaveCount(2);
+  await expect(stem(page).locator('[data-stroke]')).toHaveCount(1);
+  await tools.getByRole('button', { name: '형광펜', exact: true }).click(); await stroke(stem(page));
+  await expect(stem(page).locator('[data-stroke]').last()).toHaveAttribute('stroke', '#FF95B8');
+});
+
+test('누른 채 직선 미리보기·끝점 조정·두 단계 Undo와 재로드', async ({ page }) => {
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  await expect(stem(page)).toHaveAttribute('data-ready', 'true');
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await contact(stem(page), 'start');
+  await page.clock.runFor(999);
+  await expect(stem(page).locator('[data-ink-preview] path')).toHaveAttribute('data-shape', 'freehand');
+  await page.clock.runFor(17);
+  await expect(stem(page).locator('[data-ink-preview] path')).toHaveAttribute('data-shape', 'line');
+  await contact(stem(page), 'move', 190, 60); await page.clock.runFor(17);
+  await contact(stem(page), 'pointerup', 200, 55);
+  const tools = sharedTools(page);
+  await expect(stem(page).locator('[data-stroke]')).toHaveAttribute('data-shape', 'line');
+  await expect(page.locator('[data-ink-status="stem"]')).toContainText('필기 저장됨');
+  const json = page.waitForEvent('download'); await page.getByRole('button', { name: '문항 필기 JSON 내보내기', exact: true }).click();
+  const stream = await (await json).createReadStream(), chunks: Buffer[] = [];
+  for await (const chunk of stream!) chunks.push(chunk);
+  const saved = JSON.parse(Buffer.concat(chunks).toString()).surfaces.stem;
+  expect(saved.revision).toBe(1);
+  expect(saved.document.strokes[0].points.map(({ x, y }: { x: number; y: number }) => ({ x, y }))).toEqual([{ x: 40, y: 40 }, { x: 200, y: 55 }]);
+  expect(saved.document.strokes[0].points[1].pressure).toBeCloseTo(.6);
+  await tools.getByRole('button', { name: '실행 취소', exact: true }).click();
+  await expect(stem(page).locator('[data-stroke]')).toHaveAttribute('data-shape', 'freehand');
+  await tools.getByRole('button', { name: '실행 취소', exact: true }).click();
+  await expect(stem(page).locator('[data-stroke]')).toHaveCount(0);
+  await tools.getByRole('button', { name: '다시 실행', exact: true }).click();
+  await expect(stem(page).locator('[data-stroke]')).toHaveAttribute('data-shape', 'freehand');
+  await tools.getByRole('button', { name: '다시 실행', exact: true }).click();
+  await expect(stem(page).locator('[data-stroke]')).toHaveAttribute('data-shape', 'line');
+  await expect(page.locator('[data-ink-status="stem"]')).toContainText('필기 저장됨');
+  await page.reload();
+  await expect(stem(page).locator('[data-stroke]')).toHaveAttribute('data-shape', 'line');
+});
+
+test('조기 종료·중단·Undo 뒤에 Hold 타이머가 필기를 다시 만들지 않는다', async ({ page }) => {
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  await expect(stem(page)).toHaveAttribute('data-ready', 'true');
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await contact(stem(page), 'start'); await page.clock.runFor(700);
+  await contact(stem(page), 'pointerup'); await page.clock.runFor(1500);
+  await expect(stem(page).locator('[data-stroke]')).toHaveAttribute('data-shape', 'freehand');
+  const interruptions = ['pointercancel', 'lostpointercapture', 'pagehide', 'visibilitychange', 'tool', 'disable', 'undo'] as const;
+  for (const interruption of interruptions) {
+    await contact(stem(page), 'start'); await page.clock.runFor(1016);
+    await expect(stem(page).locator('[data-ink-preview] path')).toHaveAttribute('data-shape', 'line');
+    if (interruption === 'pointercancel' || interruption === 'lostpointercapture') await contact(stem(page), interruption);
+    else if (interruption === 'pagehide') await page.evaluate(() => window.dispatchEvent(new Event('pagehide')));
+    else if (interruption === 'visibilitychange') await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' });
+      document.dispatchEvent(new Event('visibilitychange'));
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+    });
+    else if (interruption === 'tool') {
+      await sharedTools(page).getByRole('button', { name: '형광펜', exact: true }).click();
+      await sharedTools(page).getByRole('button', { name: '펜', exact: true }).click();
+    } else if (interruption === 'disable') {
+      await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+      await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+    } else await sharedTools(page).getByRole('button', { name: '실행 취소', exact: true }).click();
+    await expect(stem(page).locator('[data-ink-preview]')).toHaveCount(0);
+    const count = await stem(page).locator('[data-stroke]').count();
+    await page.clock.runFor(1500);
+    await expect(stem(page).locator('[data-stroke]')).toHaveCount(count);
+    await expect(stem(page).locator('[data-shape="line"]')).toHaveCount(0);
+  }
+});
+
+test('표면 전환과 unmount는 직선 후보의 원본을 보존하고 새 표면의 첫 획을 받는다', async ({ page }) => {
+  await openNote(page); await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  await page.clock.install(); await page.clock.pauseAt(new Date());
+  await contact(stem(page), 'start'); await page.clock.runFor(1016);
+  await expect(stem(page).locator('[data-ink-preview] path')).toHaveAttribute('data-shape', 'line');
+  await contact(note(page), 'start');
+  await expect(stem(page).locator('[data-stroke]')).toHaveAttribute('data-shape', 'freehand');
+  await expect(sharedTools(page).locator('[data-active-surface]')).toHaveText('노트');
+  await page.clock.runFor(1016); await contact(note(page), 'pointerup');
+  await expect(note(page).locator('[data-stroke]')).toHaveAttribute('data-shape', 'line');
+  const png = page.waitForEvent('download'); await page.getByRole('button', { name: '노트 PNG 내보내기' }).click();
+  const stream = await (await png).createReadStream(), chunks: Buffer[] = [];
+  for await (const chunk of stream!) chunks.push(chunk);
+  expect(Buffer.concat(chunks).subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+  await contact(note(page), 'start'); await page.clock.runFor(1016);
+  await page.keyboard.press('ArrowRight'); await page.clock.runFor(1500);
+  await page.keyboard.press('ArrowLeft'); await openNote(page);
+  await expect(note(page).locator('[data-stroke]')).toHaveCount(2);
+  await expect(note(page).locator('[data-stroke]').last()).toHaveAttribute('data-shape', 'freehand');
+});
+
+test('1024·1366·세로·좁은 화면에서 툴바가 답안을 가리지 않고 본문 위치를 유지한다', async ({ page }) => {
+  const heading = page.locator('#qf-question-heading');
+  const before = await heading.boundingBox();
+  await page.getByRole('button', { name: '지문 필기', exact: true }).click();
+  const after = await heading.boundingBox(); expect(after!.y).toBe(before!.y); expect(after!.x).toBe(before!.x);
+  await openNote(page);
+  await expect(page.locator('.ink-note [role="toolbar"]')).toHaveCount(0);
+  for (const width of [1366, 1024, 768, 390]) {
+    await page.setViewportSize({ width, height: width >= 1024 ? 768 : 1024 });
+    await expect(sharedTools(page)).toHaveCount(1);
+    const toolbar = await sharedTools(page).boundingBox(), question = await page.locator('.ink-question-content').boundingBox();
+    expect(toolbar!.width).toBe(54); expect(toolbar!.x).toBeGreaterThan(12);
+    expect(toolbar!.x + toolbar!.width).toBeLessThan(question!.x);
+    for (const button of await sharedTools(page).getByRole('button').all()) {
+      const box = await button.boundingBox(); expect(box!.width).toBeGreaterThanOrEqual(44); expect(box!.height).toBeGreaterThanOrEqual(44);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    if (width >= 1024) {
+      const box = await page.locator('.ink-note').boundingBox();
+      expect(box!.x).toBeGreaterThanOrEqual(question!.x + question!.width);
+      expect(question!.width).toBeGreaterThan(300); expect(box!.width).toBeGreaterThanOrEqual(320);
+    }
+    await page.locator('[data-choice]').first().click();
+    await expect(page.locator('[data-choice]').first()).toHaveAttribute('aria-pressed', 'true');
+    await page.getByRole('button', { name: '확신도 5', exact: true }).click();
+    await expect(page.getByRole('button', { name: '다음 문항 →', exact: true })).toBeVisible();
+  }
+  await page.setViewportSize({ width: 1024, height: 768 });
+  await page.evaluate(() => window.scrollTo(0, 360));
+  const top = await sharedTools(page).boundingBox(), header = await page.locator('.exam-toolbar').boundingBox();
+  expect(top!.y).toBeGreaterThanOrEqual(header!.y + header!.height);
+  await page.screenshot({ path: 'verification.local/ink-1024.png' });
+  await page.getByRole('button', { name: '넓게 보기', exact: true }).click();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
 
 test('노트 필기는 답안 데이터를 바꾸지 않고 문항 이동·새로고침 뒤 복원된다', async ({ page }) => {
@@ -59,7 +230,7 @@ test('지문/진술 도구 이력과 고정 텍스트 정렬, 손가락·마우�
   await stroke(stem(page), 'touch'); await stroke(stem(page), 'mouse');
   await expect(stem(page).locator('[data-stroke]')).toHaveCount(0);
   await stroke(stem(page));
-  const tools = page.getByRole('group', { name: '지문 필기 도구', exact: true });
+  const tools = sharedTools(page);
   await tools.getByRole('button', { name: '형광펜', exact: true }).click(); await stroke(stem(page));
   await expect(stem(page).locator('[data-stroke]')).toHaveCount(2);
   await tools.getByRole('button', { name: '실행 취소', exact: true }).click();
@@ -147,12 +318,13 @@ test('지우개·전체 지우기는 현재 영역만 변경하고 모눈·확�
   await openNote(page); await stroke(note(page));
   await page.getByRole('button', { name: '지문 필기', exact: true }).click();
   await expect(stem(page)).toHaveAttribute('data-ready', 'true'); await stroke(stem(page));
-  const tools = page.getByRole('group', { name: '풀이 노트 도구', exact: true });
+  const tools = sharedTools(page);
   await tools.getByRole('button', { name: '지우개', exact: true }).click(); await stroke(note(page));
   await expect(note(page).locator('[data-stroke]')).toHaveCount(0);
   await expect(stem(page).locator('[data-stroke]')).toHaveCount(1);
   await tools.getByRole('button', { name: '실행 취소', exact: true }).click();
   await expect(note(page).locator('[data-stroke]')).toHaveCount(1);
+  await tools.getByRole('button', { name: '필기 설정', exact: true }).click();
   await tools.getByRole('button', { name: '전체 지우기', exact: true }).click();
   await expect(note(page).locator('[data-stroke]')).toHaveCount(1);
   await tools.getByRole('button', { name: '이 영역 지우기', exact: true }).click();

@@ -1,4 +1,4 @@
-import { emptyDocument, keyId, type InkDocument, type InkKey } from './model';
+import { emptyDocument, keyId, type InkDocument, type InkKey, type InkStroke } from './model';
 import { InkConflict, readInk, saveInk } from './storage';
 import { finishInkGestures } from './gestures';
 
@@ -54,6 +54,17 @@ export class InkStore {
     if (this.undoStack.length > 80) this.undoStack.shift();
     this.redoStack = [];
     this.publish({ document }); void this.flush();
+  }
+  commitStroke(stroke: InkStroke, original?: InkStroke, height?: number) {
+    finishInkGestures();
+    if (!this.state.loaded) return;
+    const current = this.state.document;
+    const append = (s: InkStroke): InkDocument => ({ ...current, height: height ?? current.height, strokes: [...current.strokes, s] });
+    this.undoStack.push(current);
+    // Keep the freehand state in history only. Publish and persist the final state once.
+    if (original) this.undoStack.push(append(original));
+    this.undoStack = this.undoStack.slice(-80); this.redoStack = [];
+    this.publish({ document: append(stroke) }); void this.flush();
   }
   undo = () => {
     finishInkGestures();

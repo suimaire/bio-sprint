@@ -8,13 +8,22 @@ export interface InkPoint { x: number; y: number; pressure: number }
 export interface InkStroke {
   id: string; tool: 'pen' | 'highlighter'; color: string; width: number;
   points: InkPoint[];
+  shape?: 'line';
 }
 export interface InkDocument {
   width: number; height: number; background: 'plain' | 'grid'; strokes: InkStroke[];
 }
 export interface InkRecord { key: InkKey; document: InkDocument; revision: number; updatedAt: number }
-export interface InkTools { tool: 'pen' | 'highlighter' | 'eraser'; color: string; size: 1 | 2 | 3; mouse: boolean }
-export const defaultTools: InkTools = { tool: 'pen', color: '#202923', size: 2, mouse: false };
+export interface InkTools {
+  selectedTool: 'pen' | 'highlighter' | 'eraser';
+  penColor: string; highlighterColor: string;
+  penWidth: number; highlighterWidth: number; mouseDevelopmentMode: boolean;
+}
+export const defaultTools: InkTools = { selectedTool: 'pen', penColor: '#202923', highlighterColor: '#F5C542', penWidth: 3.5, highlighterWidth: 20, mouseDevelopmentMode: false };
+export const inkColors = {
+  pen: [['#202923', '검정'], ['#245FBD', '파랑'], ['#C43E36', '빨강'], ['#218A58', '초록']],
+  highlighter: [['#F5C542', '노랑'], ['#9BE15D', '초록'], ['#FF95B8', '분홍'], ['#91CDFF', '파랑'], ['#FFC078', '주황']],
+} as const;
 export const surfaceLabels: Record<InkSurface, string> = { scratchpad: '풀이 노트', stem: '문제 본문', statement: '합답 진술' };
 export const inkKey = (scope: InkScope, surface: InkSurface): InkKey => ({ ...scope, surface, version: INK_VERSION });
 export const keyId = (key: InkKey) => JSON.stringify([key.sessionId, key.runId, key.questionId, key.surface, key.version]);
